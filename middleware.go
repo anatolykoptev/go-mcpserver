@@ -81,7 +81,7 @@ func RequestLog(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rw := &responseWriter{ResponseWriter: w}
+			rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rw, r)
 			logger.Info("request",
 				slog.String("method", r.Method),
@@ -139,6 +139,7 @@ func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	} else {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Add("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
