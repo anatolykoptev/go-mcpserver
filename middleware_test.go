@@ -185,7 +185,7 @@ func TestCORS(t *testing.T) {
 	})
 
 	t.Run("allow all origins", func(t *testing.T) {
-		handler := CORS([]string{"*"})(inner)
+		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
@@ -202,7 +202,7 @@ func TestCORS(t *testing.T) {
 	})
 
 	t.Run("specific origin allowed", func(t *testing.T) {
-		handler := CORS([]string{"https://allowed.com", "https://other.com"})(inner)
+		handler := CORS(CORSConfig{Origins: []string{"https://allowed.com", "https://other.com"}})(inner)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://allowed.com")
@@ -216,7 +216,7 @@ func TestCORS(t *testing.T) {
 	})
 
 	t.Run("origin not allowed", func(t *testing.T) {
-		handler := CORS([]string{"https://allowed.com"})(inner)
+		handler := CORS(CORSConfig{Origins: []string{"https://allowed.com"}})(inner)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://evil.com")
@@ -233,7 +233,7 @@ func TestCORS(t *testing.T) {
 	})
 
 	t.Run("preflight returns 204", func(t *testing.T) {
-		handler := CORS([]string{"*"})(inner)
+		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
 		req := httptest.NewRequest(http.MethodOptions, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
@@ -251,7 +251,7 @@ func TestCORS(t *testing.T) {
 	})
 
 	t.Run("no Origin header skips CORS headers", func(t *testing.T) {
-		handler := CORS([]string{"*"})(inner)
+		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		// No Origin header.
@@ -264,6 +264,52 @@ func TestCORS(t *testing.T) {
 		}
 		if rec.Code != http.StatusOK {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+	})
+
+	t.Run("Max-Age header set", func(t *testing.T) {
+		handler := CORS(CORSConfig{Origins: []string{"*"}, MaxAge: 3600})(inner)
+
+		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req.Header.Set("Origin", "https://example.com")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Max-Age"); got != "3600" {
+			t.Errorf("Max-Age = %q, want %q", got, "3600")
+		}
+	})
+
+	t.Run("Max-Age omitted when zero", func(t *testing.T) {
+		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
+
+		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req.Header.Set("Origin", "https://example.com")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Max-Age"); got != "" {
+			t.Errorf("Max-Age should be empty when zero, got %q", got)
+		}
+	})
+
+	t.Run("custom Allow-Headers", func(t *testing.T) {
+		handler := CORS(CORSConfig{
+			Origins:      []string{"*"},
+			AllowHeaders: []string{"X-Custom", "X-Other"},
+		})(inner)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Origin", "https://example.com")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		want := "X-Custom, X-Other"
+		if got := rec.Header().Get("Access-Control-Allow-Headers"); got != want {
+			t.Errorf("Allow-Headers = %q, want %q", got, want)
 		}
 	})
 }

@@ -1,16 +1,47 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestValidate(t *testing.T) {
+	t.Run("empty Name returns error", func(t *testing.T) {
+		err := validate(Config{Version: "1.0.0"})
+		if err == nil {
+			t.Fatal("expected error for empty Name")
+		}
+		if !strings.Contains(err.Error(), "Name") {
+			t.Errorf("error = %q, want mention of Name", err)
+		}
+	})
+
+	t.Run("empty Version returns error", func(t *testing.T) {
+		err := validate(Config{Name: "svc"})
+		if err == nil {
+			t.Fatal("expected error for empty Version")
+		}
+		if !strings.Contains(err.Error(), "Version") {
+			t.Errorf("error = %q, want mention of Version", err)
+		}
+	})
+
+	t.Run("valid config passes", func(t *testing.T) {
+		err := validate(Config{Name: "svc", Version: "1.0.0"})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
 
 func TestIsStdio(t *testing.T) {
 	tests := []struct {
@@ -134,7 +165,7 @@ func TestBuildMiddleware(t *testing.T) {
 
 	t.Run("CORS adds middleware", func(t *testing.T) {
 		logger := testLogger()
-		mws := buildMiddleware(Config{CORSOrigins: []string{"*"}}, logger)
+		mws := buildMiddleware(Config{CORSOrigins: []string{"*"}, CORSMaxAge: 3600}, logger)
 		// recovery + requestID + requestLog + CORS = 4
 		if len(mws) != 4 {
 			t.Errorf("len(mws) = %d, want 4", len(mws))
@@ -150,6 +181,66 @@ func TestBuildMiddleware(t *testing.T) {
 			t.Errorf("len(mws) = %d, want 4", len(mws))
 		}
 	})
+}
+
+func TestRunWithExternalContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "ctx-server",
+		Version: "0.0.1",
+	}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	shutdownCalled := make(chan struct{})
+	cfg := Config{
+		Name:              "ctx-server",
+		Version:           "0.0.1",
+		Port:              "19877",
+		Context:           ctx,
+		DisableRequestLog: true,
+		OnShutdown: func() {
+			close(shutdownCalled)
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(server, cfg)
+	}()
+
+	// Wait for server to start.
+	for range 50 {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:19877/health") //nolint:noctx
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+	}
+
+	// Cancel context instead of sending SIGINT.
+	cancel()
+
+	select {
+	case <-shutdownCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnShutdown was not called within 5s after context cancel")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s")
+	}
 }
 
 func TestRunIntegration(t *testing.T) {
