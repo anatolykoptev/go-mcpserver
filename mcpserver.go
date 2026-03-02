@@ -40,6 +40,7 @@ type Config struct {
 
 	DisableRecovery bool         // default false (recovery ON)
 	DisableHealth   bool         // set true to register custom /health in Routes
+	ReadinessCheck  func() error // nil = /health/ready always returns 200
 
 	Logger     *slog.Logger // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
 	OnShutdown func()       // called before HTTP shutdown
