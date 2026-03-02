@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -66,17 +67,27 @@ func TestChainEmpty(t *testing.T) {
 }
 
 func TestRecovery(t *testing.T) {
-	t.Run("panic returns 500", func(t *testing.T) {
+	t.Run("panic returns 500 with stack trace", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
 		inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			panic("boom")
 		})
-		handler := Recovery(testLogger())(inner)
+		handler := Recovery(logger)(inner)
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/explode", nil))
 
 		if rec.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+		}
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "stack=") {
+			t.Errorf("log output missing stack field: %s", logOutput)
+		}
+		if !strings.Contains(logOutput, "goroutine") {
+			t.Errorf("stack trace should contain goroutine info: %s", logOutput)
 		}
 	})
 
@@ -151,11 +162,14 @@ func TestRequestID(t *testing.T) {
 }
 
 func TestRequestLog(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte("ok"))
 	})
-	handler := RequestLog(testLogger())(inner)
+	handler := RequestLog(logger)(inner)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/test", nil))
@@ -165,6 +179,11 @@ func TestRequestLog(t *testing.T) {
 	}
 	if rec.Body.String() != "ok" {
 		t.Errorf("body = %q, want %q", rec.Body.String(), "ok")
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "bytes=2") {
+		t.Errorf("log output missing bytes field: %s", logOutput)
 	}
 }
 
@@ -177,6 +196,44 @@ func TestResponseWriterUnwrap(t *testing.T) {
 		t.Errorf("Unwrap() returned %T, want *httptest.ResponseRecorder", unwrapped)
 	}
 }
+
+func TestResponseWriterFlusher(t *testing.T) {
+	// Compile-time check: responseWriter implements http.Flusher.
+	var _ http.Flusher = (*responseWriter)(nil)
+
+	t.Run("delegates to underlying Flusher", func(t *testing.T) {
+		flushed := false
+		mock := &mockFlusherWriter{
+			ResponseWriter: httptest.NewRecorder(),
+			onFlush:        func() { flushed = true },
+		}
+		rw := &responseWriter{ResponseWriter: mock}
+		rw.Flush()
+		if !flushed {
+			t.Error("Flush did not delegate to underlying Flusher")
+		}
+	})
+
+	t.Run("no-op when underlying does not implement Flusher", func(t *testing.T) {
+		rw := &responseWriter{ResponseWriter: &nonFlusherWriter{}}
+		rw.Flush() // should not panic
+	})
+}
+
+// mockFlusherWriter implements http.ResponseWriter + http.Flusher.
+type mockFlusherWriter struct {
+	http.ResponseWriter
+	onFlush func()
+}
+
+func (m *mockFlusherWriter) Flush() { m.onFlush() }
+
+// nonFlusherWriter implements http.ResponseWriter but NOT http.Flusher.
+type nonFlusherWriter struct{}
+
+func (n *nonFlusherWriter) Header() http.Header        { return http.Header{} }
+func (n *nonFlusherWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (n *nonFlusherWriter) WriteHeader(int)             {}
 
 func TestCORS(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

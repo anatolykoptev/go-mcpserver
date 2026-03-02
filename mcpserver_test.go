@@ -243,6 +243,197 @@ func TestRunWithExternalContext(t *testing.T) {
 	}
 }
 
+func TestRunBindFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	// Start first server to occupy a port.
+	server1 := mcp.NewServer(&mcp.Implementation{
+		Name: "blocker", Version: "0.0.1",
+	}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh1 := make(chan error, 1)
+	go func() {
+		errCh1 <- Run(server1, Config{
+			Name:              "blocker",
+			Version:           "0.0.1",
+			Port:              "19879",
+			Context:           ctx,
+			DisableRequestLog: true,
+		})
+	}()
+
+	// Wait for first server to start.
+	for range 50 {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:19879/health") //nolint:noctx
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+	}
+
+	// Try to start second server on the same port — should return error.
+	server2 := mcp.NewServer(&mcp.Implementation{
+		Name: "conflict", Version: "0.0.1",
+	}, nil)
+
+	err := Run(server2, Config{
+		Name:              "conflict",
+		Version:           "0.0.1",
+		Port:              "19879",
+		Context:           context.Background(),
+		DisableRequestLog: true,
+	})
+	if err == nil {
+		t.Fatal("Run should return error when port is occupied")
+	}
+	if !strings.Contains(err.Error(), "bind") && !strings.Contains(err.Error(), "address already in use") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	cancel()
+	<-errCh1
+}
+
+func TestBuild(t *testing.T) {
+	t.Run("invalid config returns error", func(t *testing.T) {
+		_, err := Build(nil, Config{})
+		if err == nil {
+			t.Fatal("expected error for invalid config")
+		}
+	})
+
+	t.Run("nil server without DisableMCP returns error", func(t *testing.T) {
+		_, err := Build(nil, Config{Name: "svc", Version: "1.0.0"})
+		if err == nil {
+			t.Fatal("expected error for nil server")
+		}
+		if !strings.Contains(err.Error(), "server must not be nil") {
+			t.Errorf("error = %q, want mention of nil server", err)
+		}
+	})
+
+	t.Run("DisableMCP with nil server works", func(t *testing.T) {
+		h, err := Build(nil, Config{
+			Name:       "svc",
+			Version:    "1.0.0",
+			DisableMCP: true,
+		})
+		if err != nil {
+			t.Fatalf("Build error: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("/health status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("custom Routes appear in handler", func(t *testing.T) {
+		h, err := Build(nil, Config{
+			Name:       "svc",
+			Version:    "1.0.0",
+			DisableMCP: true,
+			Routes: func(mux *http.ServeMux) {
+				mux.HandleFunc("GET /custom", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTeapot)
+				})
+			},
+		})
+		if err != nil {
+			t.Fatalf("Build error: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/custom", nil))
+		if rec.Code != http.StatusTeapot {
+			t.Errorf("/custom status = %d, want 418", rec.Code)
+		}
+	})
+}
+
+func TestRunDisableMCP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := Config{
+		Name:              "no-mcp",
+		Version:           "0.0.1",
+		Port:              "19880",
+		Context:           ctx,
+		DisableMCP:        true,
+		DisableRequestLog: true,
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(nil, cfg) }()
+
+	// Wait for server to start.
+	for range 50 {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:19880/health") //nolint:noctx
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+	}
+
+	// /health should work.
+	resp, err := http.Get("http://127.0.0.1:19880/health") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /health failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/health status = %d, want 200", resp.StatusCode)
+	}
+
+	// /mcp should return 404 (not registered).
+	resp, err = http.Post("http://127.0.0.1:19880/mcp", "application/json", nil) //nolint:noctx
+	if err != nil {
+		t.Fatalf("POST /mcp failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/mcp status = %d, want 404", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s")
+	}
+}
+
+func TestRunNilServerReturnsError(t *testing.T) {
+	err := Run(nil, Config{Name: "svc", Version: "1.0.0"})
+	if err == nil {
+		t.Fatal("expected error for nil server without DisableMCP")
+	}
+	if !strings.Contains(err.Error(), "server must not be nil") {
+		t.Errorf("error = %q, want mention of nil server", err)
+	}
+}
+
 func TestRunIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
