@@ -1,7 +1,7 @@
 // Package mcpserver provides a bootstrap library for Go MCP servers.
 //
 // It handles stdio detection, slog setup, signal handling, StreamableHTTP handler,
-// /mcp routes, /health endpoint, recovery middleware, and graceful shutdown.
+// middleware chain, /health endpoints, and graceful shutdown.
 package mcpserver
 
 import (
@@ -35,12 +35,16 @@ type Config struct {
 	ReadTimeout     time.Duration // default 30s
 	ShutdownTimeout time.Duration // default 10s
 
-	Metrics  func() string        // if set, registers GET /metrics
-	Routes   func(*http.ServeMux) // extra routes after /mcp, /health, /metrics
+	Metrics func() string        // if set, registers GET /metrics
+	Routes  func(*http.ServeMux) // extra routes after /mcp, /health, /metrics
 
-	DisableRecovery bool         // default false (recovery ON)
-	DisableHealth   bool         // set true to register custom /health in Routes
-	ReadinessCheck  func() error // nil = /health/ready always returns 200
+	Middleware     []Middleware  // custom middleware, applied after built-ins
+	CORSOrigins    []string     // nil = no CORS; ["*"] = allow all
+	ReadinessCheck func() error // nil = /health/ready always returns 200
+
+	DisableRecovery   bool // default false (recovery ON)
+	DisableHealth     bool // set true to register custom /health in Routes
+	DisableRequestLog bool // default false (request logging ON)
 
 	Logger     *slog.Logger // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
 	OnShutdown func()       // called before HTTP shutdown
@@ -80,21 +84,25 @@ func withDefaults(cfg Config) Config {
 	return cfg
 }
 
-func recoveryMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rv := recover(); rv != nil {
-				logger.Error("panic recovered", slog.Any("panic", rv), slog.String("path", r.URL.Path))
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
+func buildMiddleware(cfg Config, logger *slog.Logger) []Middleware {
+	var mws []Middleware
+	if !cfg.DisableRecovery {
+		mws = append(mws, Recovery(logger))
+	}
+	mws = append(mws, RequestID())
+	if !cfg.DisableRequestLog {
+		mws = append(mws, RequestLog(logger))
+	}
+	if len(cfg.CORSOrigins) > 0 {
+		mws = append(mws, CORS(cfg.CORSOrigins))
+	}
+	mws = append(mws, cfg.Middleware...)
+	return mws
 }
 
 // Run starts the MCP server and blocks until a signal is received.
 // In stdio mode (--stdio flag), it runs via stdin/stdout.
-// Otherwise, it starts an HTTP server with /mcp, /health, and optional /metrics routes.
+// Otherwise, it starts an HTTP server with middleware, /mcp, /health, and optional /metrics.
 func Run(server *mcp.Server, cfg Config) error {
 	cfg = withDefaults(cfg)
 	stdio := isStdio()
@@ -127,13 +135,7 @@ func Run(server *mcp.Server, cfg Config) error {
 	mux.Handle("/mcp", handler)
 	mux.Handle("/mcp/", handler)
 
-	if !cfg.DisableHealth {
-		healthBody := `{"status":"ok","service":"` + cfg.Name + `","version":"` + cfg.Version + `"}`
-		mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(healthBody))
-		})
-	}
+	registerHealth(mux, cfg)
 
 	if cfg.Metrics != nil {
 		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -146,10 +148,7 @@ func Run(server *mcp.Server, cfg Config) error {
 		cfg.Routes(mux)
 	}
 
-	var h http.Handler = mux
-	if !cfg.DisableRecovery {
-		h = recoveryMiddleware(mux, logger)
-	}
+	h := Chain(mux, buildMiddleware(cfg, logger)...)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

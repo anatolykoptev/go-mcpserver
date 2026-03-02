@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,40 +89,6 @@ func TestWithDefaults(t *testing.T) {
 	})
 }
 
-func TestHealthHandler(t *testing.T) {
-	cfg := Config{Name: "test-svc", Version: "1.2.3"}
-	healthBody := `{"status":"ok","service":"` + cfg.Name + `","version":"` + cfg.Version + `"}`
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(healthBody))
-	})
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want application/json", ct)
-	}
-
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	if body["status"] != "ok" {
-		t.Errorf("status = %q, want ok", body["status"])
-	}
-	if body["service"] != "test-svc" {
-		t.Errorf("service = %q, want test-svc", body["service"])
-	}
-	if body["version"] != "1.2.3" {
-		t.Errorf("version = %q, want 1.2.3", body["version"])
-	}
-}
-
 func TestMetricsHandler(t *testing.T) {
 	metricsText := "requests_total 42\nerrors_total 0"
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -145,32 +110,44 @@ func TestMetricsHandler(t *testing.T) {
 	}
 }
 
-func TestRecoveryMiddleware(t *testing.T) {
-	t.Run("panic returns 500", func(t *testing.T) {
-		inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			panic("test panic")
-		})
-		handler := recoveryMiddleware(inner, defaultLogger())
-
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+func TestBuildMiddleware(t *testing.T) {
+	t.Run("default config builds 3 middleware", func(t *testing.T) {
+		logger := testLogger()
+		mws := buildMiddleware(Config{}, logger)
+		// recovery + requestID + requestLog = 3
+		if len(mws) != 3 {
+			t.Errorf("len(mws) = %d, want 3", len(mws))
 		}
 	})
 
-	t.Run("no panic passes through", func(t *testing.T) {
-		inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})
-		handler := recoveryMiddleware(inner, defaultLogger())
+	t.Run("all disabled builds 1 middleware", func(t *testing.T) {
+		logger := testLogger()
+		mws := buildMiddleware(Config{
+			DisableRecovery:   true,
+			DisableRequestLog: true,
+		}, logger)
+		// only requestID
+		if len(mws) != 1 {
+			t.Errorf("len(mws) = %d, want 1", len(mws))
+		}
+	})
 
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	t.Run("CORS adds middleware", func(t *testing.T) {
+		logger := testLogger()
+		mws := buildMiddleware(Config{CORSOrigins: []string{"*"}}, logger)
+		// recovery + requestID + requestLog + CORS = 4
+		if len(mws) != 4 {
+			t.Errorf("len(mws) = %d, want 4", len(mws))
+		}
+	})
 
-		if rec.Code != http.StatusOK {
-			t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	t.Run("custom middleware appended", func(t *testing.T) {
+		logger := testLogger()
+		noop := func(next http.Handler) http.Handler { return next }
+		mws := buildMiddleware(Config{Middleware: []Middleware{noop}}, logger)
+		// recovery + requestID + requestLog + custom = 4
+		if len(mws) != 4 {
+			t.Errorf("len(mws) = %d, want 4", len(mws))
 		}
 	})
 }
@@ -187,17 +164,14 @@ func TestRunIntegration(t *testing.T) {
 
 	shutdownCalled := make(chan struct{})
 	cfg := Config{
-		Name:    "test-server",
-		Version: "0.0.1",
-		Port:    "0", // let OS pick a free port
+		Name:              "test-server",
+		Version:           "0.0.1",
+		Port:              "19876",
+		DisableRequestLog: true, // suppress log noise in tests
 		OnShutdown: func() {
 			close(shutdownCalled)
 		},
 	}
-
-	// Port 0 won't work with our Run (it uses ":0" and we can't discover the port).
-	// Use a high random port instead.
-	cfg.Port = "19876"
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -208,7 +182,7 @@ func TestRunIntegration(t *testing.T) {
 	var lastErr error
 	for range 50 {
 		time.Sleep(50 * time.Millisecond)
-		resp, err := http.Get("http://127.0.0.1:19876/health") //nolint:noctx // test code
+		resp, err := http.Get("http://127.0.0.1:19876/health") //nolint:noctx
 		if err != nil {
 			lastErr = err
 			continue
@@ -224,7 +198,7 @@ func TestRunIntegration(t *testing.T) {
 	}
 
 	// Verify health endpoint.
-	resp, err := http.Get("http://127.0.0.1:19876/health") //nolint:noctx // test code
+	resp, err := http.Get("http://127.0.0.1:19876/health") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET /health failed: %v", err)
 	}
@@ -238,13 +212,27 @@ func TestRunIntegration(t *testing.T) {
 		t.Errorf("service = %q, want test-server", body["service"])
 	}
 
+	// Verify X-Request-ID header is present.
+	if resp.Header.Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header missing from response")
+	}
+
+	// Verify liveness endpoint.
+	liveResp, err := http.Get("http://127.0.0.1:19876/health/live") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /health/live failed: %v", err)
+	}
+	liveResp.Body.Close()
+	if liveResp.StatusCode != http.StatusOK {
+		t.Errorf("/health/live status = %d, want %d", liveResp.StatusCode, http.StatusOK)
+	}
+
 	// Send SIGINT to trigger shutdown.
 	p, _ := os.FindProcess(os.Getpid())
 	_ = p.Signal(syscall.SIGINT)
 
 	select {
 	case <-shutdownCalled:
-		// ok
 	case <-time.After(5 * time.Second):
 		t.Fatal("OnShutdown was not called within 5s")
 	}
@@ -257,8 +245,4 @@ func TestRunIntegration(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return within 5s")
 	}
-}
-
-func defaultLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
