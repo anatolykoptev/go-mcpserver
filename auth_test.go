@@ -144,3 +144,20 @@ func TestProtectedResourceMetadata(t *testing.T) {
 		t.Errorf("resource = %v, want https://example.com/mcp", meta["resource"])
 	}
 }
+
+func TestStaticTokenVerifier(t *testing.T) {
+	v := StaticTokenVerifier("secret-123")
+
+	info, err := v(context.Background(), "secret-123", nil)
+	if err != nil {
+		t.Fatalf("valid token: %v", err)
+	}
+	if info.Expiration.IsZero() {
+		t.Error("expected non-zero expiration")
+	}
+
+	_, err = v(context.Background(), "wrong", nil)
+	if err == nil {
+		t.Error("invalid token: expected error")
+	}
+}

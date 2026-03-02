@@ -1,6 +1,10 @@
 package mcpserver
 
 import (
+	"context"
+	"net/http"
+	"time"
+
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
@@ -30,3 +34,14 @@ type TokenInfo = auth.TokenInfo
 
 // TokenInfoFromContext retrieves token info set by bearer auth middleware.
 var TokenInfoFromContext = auth.TokenInfoFromContext
+
+// StaticTokenVerifier returns a [auth.TokenVerifier] that accepts a single
+// pre-shared token. Useful for internal services that don't need full OAuth.
+func StaticTokenVerifier(token string) auth.TokenVerifier {
+	return func(_ context.Context, t string, _ *http.Request) (*auth.TokenInfo, error) {
+		if t != token {
+			return nil, auth.ErrInvalidToken
+		}
+		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil
+	}
+}
