@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -431,6 +432,64 @@ func TestRunNilServerReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "server must not be nil") {
 		t.Errorf("error = %q, want mention of nil server", err)
+	}
+}
+
+func TestMCPMiddlewareApplied(t *testing.T) {
+	var called atomic.Bool
+	mw := func(h mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			called.Store(true)
+			return h(ctx, method, req)
+		}
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "mw-test", Version: "0.0.1"}, nil)
+	h, err := Build(server, Config{
+		Name:                  "mw-test",
+		Version:               "0.0.1",
+		MCPReceivingMiddleware: []mcp.Middleware{mw},
+		DisableRequestLog:     true,
+	})
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	h.ServeHTTP(rec, req)
+
+	if !called.Load() {
+		t.Error("MCP receiving middleware was not called")
+	}
+}
+
+func TestBuildStreamableHTTPOptions(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "opts-test", Version: "0.0.1"}, nil)
+	h, err := Build(server, Config{
+		Name:              "opts-test",
+		Version:           "0.0.1",
+		JSONResponse:      true,
+		SessionTimeout:    5 * time.Minute,
+		DisableRequestLog: true,
+	})
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	h.ServeHTTP(rec, req)
+
+	ct := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json (JSONResponse=true)", ct)
 	}
 }
 
