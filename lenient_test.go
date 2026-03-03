@@ -47,6 +47,20 @@ func TestCoerceStringTypes(t *testing.T) {
 	}
 }
 
+func TestCoerceNullableBool(t *testing.T) {
+	// *bool generates Types: ["null", "boolean"] instead of Type: "boolean"
+	schema := &jsonschema.Schema{
+		Properties: map[string]*jsonschema.Schema{
+			"flag": {Types: []string{"null", "boolean"}},
+		},
+	}
+	m := map[string]any{"flag": "true"}
+	coerceStringTypes(m, schema)
+	if m["flag"] != true {
+		t.Errorf("nullable bool: got %v (%T), want true", m["flag"], m["flag"])
+	}
+}
+
 func TestCoerceNilSchema(t *testing.T) {
 	m := map[string]any{"x": "true"}
 	coerceStringTypes(m, nil)
