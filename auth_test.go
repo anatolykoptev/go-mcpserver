@@ -145,6 +145,149 @@ func TestProtectedResourceMetadata(t *testing.T) {
 	}
 }
 
+// bearerRoundTripper injects Authorization header into every request.
+type bearerRoundTripper struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (rt *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := req.Clone(req.Context())
+	r.Header.Set("Authorization", "Bearer "+rt.token)
+	return rt.base.RoundTrip(r)
+}
+
+func authClient(ts *httptest.Server, token string) *http.Client {
+	return &http.Client{
+		Transport: &bearerRoundTripper{token: token, base: ts.Client().Transport},
+	}
+}
+
+func connectMCP(t *testing.T, ts *httptest.Server, token string) *mcp.ClientSession {
+	t.Helper()
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:             ts.URL + "/mcp",
+		HTTPClient:           authClient(ts, token),
+		DisableStandaloneSSE: true,
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	sess, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+func scopeFilter(_ context.Context, toolName string, info *TokenInfo) bool {
+	if info == nil {
+		return false
+	}
+	for _, s := range info.Scopes {
+		if s == "tool:"+toolName {
+			return true
+		}
+	}
+	return false
+}
+
+func newFilterTestServer(t *testing.T) *mcp.Server {
+	t.Helper()
+	server := mcp.NewServer(&mcp.Implementation{Name: "filter-test", Version: "0.0.1"}, nil)
+	for _, name := range []string{"allowed", "denied", "other"} {
+		n := name
+		mcp.AddTool(server, &mcp.Tool{Name: n}, func(_ context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok:" + n}}}, nil, nil
+		})
+	}
+	return server
+}
+
+func TestToolFilterHidesTools(t *testing.T) {
+	server := newFilterTestServer(t)
+	ts := NewTestServer(t, server, Config{
+		Name:    "filter-test",
+		Version: "0.0.1",
+		BearerAuth: &BearerAuth{
+			Verifier:   validVerifier,
+			ToolFilter: scopeFilter,
+		},
+		DisableRequestLog: true,
+	})
+
+	sess := connectMCP(t, ts, "valid-token")
+	result, err := sess.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	// validVerifier returns scopes ["mcp:read", "mcp:write"]
+	// scopeFilter expects "tool:<name>", so no tools should pass
+	if len(result.Tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(result.Tools))
+	}
+}
+
+func TestToolFilterBlocksCall(t *testing.T) {
+	server := newFilterTestServer(t)
+	ts := NewTestServer(t, server, Config{
+		Name:    "filter-test",
+		Version: "0.0.1",
+		BearerAuth: &BearerAuth{
+			Verifier:   validVerifier,
+			ToolFilter: scopeFilter,
+		},
+		DisableRequestLog: true,
+	})
+
+	sess := connectMCP(t, ts, "valid-token")
+	result, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "denied"})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for denied tool")
+	}
+}
+
+func TestToolFilterPassesCall(t *testing.T) {
+	grantVerifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		if token == "valid-token" {
+			return &auth.TokenInfo{
+				Scopes:     []string{"tool:allowed"},
+				Expiration: time.Now().Add(time.Hour),
+			}, nil
+		}
+		return nil, auth.ErrInvalidToken
+	}
+
+	server := newFilterTestServer(t)
+	ts := NewTestServer(t, server, Config{
+		Name:    "filter-test",
+		Version: "0.0.1",
+		BearerAuth: &BearerAuth{
+			Verifier:   grantVerifier,
+			ToolFilter: scopeFilter,
+		},
+		DisableRequestLog: true,
+	})
+
+	sess := connectMCP(t, ts, "valid-token")
+	result, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "allowed"})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for allowed tool")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected content")
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || tc.Text != "ok:allowed" {
+		t.Errorf("unexpected content: %v", result.Content[0])
+	}
+}
+
 func TestStaticTokenVerifier(t *testing.T) {
 	v := StaticTokenVerifier("secret-123")
 
