@@ -32,23 +32,23 @@ type Config struct {
 	Metrics func() string        // if set, registers GET /metrics
 	Routes  func(*http.ServeMux) // extra routes after /mcp, /health, /metrics
 
-	Middleware       []Middleware  // custom middleware, applied after built-ins
+	Middleware       []Middleware // custom middleware, applied after built-ins
 	CORSOrigins      []string     // nil = no CORS; ["*"] = allow all
 	CORSMaxAge       int          // preflight Max-Age in seconds; 0 = omit header
 	CORSAllowHeaders []string     // nil = default (Content-Type, Authorization, X-Request-ID)
 	ReadinessCheck   func() error // nil = /health/ready always returns 200
 
-	DisableRecovery   bool // default false (recovery ON)
-	DisableHealth     bool // set true to register custom /health in Routes
-	DisableRequestLog bool // default false (request logging ON)
-	DisableMCP        bool // skip /mcp route registration; server param may be nil
+	DisableRecovery   bool  // default false (recovery ON)
+	DisableHealth     bool  // set true to register custom /health in Routes
+	DisableRequestLog bool  // default false (request logging ON)
+	DisableMCP        bool  // skip /mcp route registration; server param may be nil
 	Stateless         *bool // nil = default true; *false = stateful (session) mode
 
 	MCPReceivingMiddleware []mcp.Middleware // applied to incoming JSON-RPC (client→server)
 	MCPSendingMiddleware   []mcp.Middleware // applied to outgoing JSON-RPC (server→client)
 
 	SessionTimeout time.Duration  // idle session timeout; 0 = never (passed to StreamableHTTPOptions)
-	EventStore     mcp.EventStore // stream resumption; nil = disabled
+	EventStore     mcp.EventStore // stream resumption; nil = MemoryEventStore (auto-enabled)
 	JSONResponse   bool           // true = application/json instead of text/event-stream
 	MCPLogger      *slog.Logger   // separate logger for StreamableHTTP handler; nil = none
 
@@ -85,6 +85,10 @@ func withDefaults(cfg Config) Config {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
+	}
+	// Enable stream resumption by default — prevents lost events after reconnect.
+	if cfg.EventStore == nil {
+		cfg.EventStore = mcp.NewMemoryEventStore(nil)
 	}
 	return cfg
 }
