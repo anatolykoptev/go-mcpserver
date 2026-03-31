@@ -14,7 +14,7 @@ import (
 const (
 	defaultPort            = "8080"
 	defaultReadTimeout     = 30 * time.Second
-	defaultWriteTimeout    = 120 * time.Second
+	defaultWriteTimeout    = 0 // disabled for SSE — tools manage own timeout via context
 	defaultShutdownTimeout = 10 * time.Second
 	portEnvVar             = "MCP_PORT"
 )
@@ -25,7 +25,7 @@ type Config struct {
 	Version string // version for /health + logs (required)
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
-	WriteTimeout    time.Duration // default 120s
+	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
 	ReadTimeout     time.Duration // default 30s
 	ShutdownTimeout time.Duration // default 10s
 
