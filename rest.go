@@ -278,57 +278,53 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 	return spec
 }
 
+// toolResponseSchema is the OpenAPI schema for tool call responses.
+var toolResponseSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"content":    map[string]any{"type": "array", "items": map[string]string{"type": "object"}},
+		"structured": map[string]string{"type": "object"},
+		"is_error":   map[string]string{"type": "boolean"},
+	},
+}
+
+// toolResponses defines the standard OpenAPI response set for tool endpoints.
+var toolResponses = map[string]any{
+	"200": map[string]any{
+		"description": "Successful tool call",
+		"content": map[string]any{
+			contentTypeJSON: map[string]any{"schema": toolResponseSchema},
+		},
+	},
+	"400": map[string]any{"description": "Invalid request"},
+	"422": map[string]any{"description": "Tool returned an error"},
+	"500": map[string]any{"description": "Internal server error"},
+}
+
 // buildToolPath creates the OpenAPI path item for a single tool.
 func buildToolPath(t *mcp.Tool) map[string]any {
 	op := map[string]any{
 		"operationId": t.Name,
-		"responses": map[string]any{
-			"200": map[string]any{
-				"description": "Successful tool call",
-				"content": map[string]any{
-					contentTypeJSON: map[string]any{
-						"schema": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"content": map[string]any{
-									"type":  "array",
-									"items": map[string]string{"type": "object"},
-								},
-								"structured": map[string]string{"type": "object"},
-								"is_error":   map[string]string{"type": "boolean"},
-							},
-						},
-					},
-				},
-			},
-			"400": map[string]any{
-				"description": "Invalid request",
-			},
-			"422": map[string]any{
-				"description": "Tool returned an error",
-			},
-			"500": map[string]any{
-				"description": "Internal server error",
-			},
-		},
+		"responses":   toolResponses,
 	}
-
 	if t.Description != "" {
 		op["summary"] = t.Description
 	}
-
 	if t.InputSchema != nil {
-		inputSchema := normalizeSchema(t.InputSchema)
-		op["requestBody"] = map[string]any{
-			"content": map[string]any{
-				contentTypeJSON: map[string]any{
-					"schema": inputSchema,
-				},
-			},
-		}
+		op["requestBody"] = buildRequestBody(t.InputSchema)
 	}
-
 	return map[string]any{"post": op}
+}
+
+// buildRequestBody creates an OpenAPI request body from a tool input schema.
+func buildRequestBody(schema any) map[string]any {
+	return map[string]any{
+		"content": map[string]any{
+			contentTypeJSON: map[string]any{
+				"schema": normalizeSchema(schema),
+			},
+		},
+	}
 }
 
 // normalizeSchema converts the InputSchema (which may be *jsonschema.Schema
