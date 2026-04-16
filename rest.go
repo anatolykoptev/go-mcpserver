@@ -98,6 +98,9 @@ func (b *restBridge) handleListTools(w http.ResponseWriter, r *http.Request) {
 		b.writeError(w, http.StatusInternalServerError, "failed to list tools", err)
 		return
 	}
+	if tools == nil {
+		tools = []*mcp.Tool{}
+	}
 	b.writeJSON(w, http.StatusOK, tools)
 }
 
