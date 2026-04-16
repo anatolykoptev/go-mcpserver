@@ -29,9 +29,10 @@ type restBridge struct {
 	prefix      string
 	cfg         Config
 	logger      *slog.Logger
-	cachedOnce  sync.Once
-	cachedTools []*mcp.Tool
-	cachedErr   error
+	cachedOnce    sync.Once
+	cachedTools   []*mcp.Tool
+	cachedByName  map[string]*mcp.Tool
+	cachedErr     error
 }
 
 // startRESTBridge creates an in-process MCP client, connects it to the server,
@@ -108,37 +109,28 @@ func (b *restBridge) handleListTools(w http.ResponseWriter, r *http.Request) {
 func (b *restBridge) handleGetTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !validToolName.MatchString(name) {
-		b.writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid tool name",
-		})
+		b.writeError(w, http.StatusBadRequest, "invalid tool name", nil)
 		return
 	}
 
-	tools, err := b.getTools(r.Context())
+	tool, err := b.getTool(r.Context(), name)
 	if err != nil {
 		b.writeError(w, http.StatusInternalServerError, "failed to list tools", err)
 		return
 	}
-
-	for _, t := range tools {
-		if t.Name == name {
-			b.writeJSON(w, http.StatusOK, t)
-			return
-		}
+	if tool == nil {
+		b.writeError(w, http.StatusNotFound, "tool not found: "+name, nil)
+		return
 	}
 
-	b.writeJSON(w, http.StatusNotFound, map[string]string{
-		"error": "tool not found: " + name,
-	})
+	b.writeJSON(w, http.StatusOK, tool)
 }
 
 // handleCallTool invokes an MCP tool and returns the result as JSON.
 func (b *restBridge) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !validToolName.MatchString(name) {
-		b.writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid tool name",
-		})
+		b.writeError(w, http.StatusBadRequest, "invalid tool name", nil)
 		return
 	}
 
@@ -193,8 +185,23 @@ type toolCallResponse struct {
 func (b *restBridge) getTools(ctx context.Context) ([]*mcp.Tool, error) {
 	b.cachedOnce.Do(func() {
 		b.cachedTools, b.cachedErr = b.listAllTools(ctx)
+		if b.cachedErr == nil {
+			m := make(map[string]*mcp.Tool, len(b.cachedTools))
+			for _, t := range b.cachedTools {
+				m[t.Name] = t
+			}
+			b.cachedByName = m
+		}
 	})
 	return b.cachedTools, b.cachedErr
+}
+
+// getTool returns a single tool by name, or nil if not found.
+func (b *restBridge) getTool(ctx context.Context, name string) (*mcp.Tool, error) {
+	if _, err := b.getTools(ctx); err != nil {
+		return nil, err
+	}
+	return b.cachedByName[name], nil
 }
 
 // listAllTools fetches all tools using pagination.
