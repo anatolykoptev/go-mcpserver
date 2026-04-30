@@ -16,7 +16,7 @@ const (
 	defaultReadTimeout     = 30 * time.Second
 	defaultWriteTimeout    = 0 // disabled for SSE — tools manage own timeout via context
 	defaultShutdownTimeout = 10 * time.Second
-	defaultToolTimeout     = 60 * time.Second
+	defaultToolTimeout     = 90 * time.Second
 	portEnvVar             = "MCP_PORT"
 )
 
