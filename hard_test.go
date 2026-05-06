@@ -249,32 +249,34 @@ func TestCORSEdgeCases(t *testing.T) {
 
 func TestResponseWriterDoubleWrite(t *testing.T) {
 	rec := httptest.NewRecorder()
-	rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
+	rw := &responseWriter{ResponseWriter: rec}
+	rw.status.Store(int32(http.StatusOK))
 
 	// First WriteHeader sets status.
 	rw.WriteHeader(http.StatusCreated)
-	if rw.status != http.StatusCreated {
-		t.Errorf("status after first WriteHeader = %d, want %d", rw.status, http.StatusCreated)
+	if got := int(rw.status.Load()); got != http.StatusCreated {
+		t.Errorf("status after first WriteHeader = %d, want %d", got, http.StatusCreated)
 	}
 
 	// Second WriteHeader is ignored (wroteHeader guard).
 	rw.WriteHeader(http.StatusNotFound)
-	if rw.status != http.StatusCreated {
-		t.Errorf("status after second WriteHeader = %d, want %d (should not change)", rw.status, http.StatusCreated)
+	if got := int(rw.status.Load()); got != http.StatusCreated {
+		t.Errorf("status after second WriteHeader = %d, want %d (should not change)", got, http.StatusCreated)
 	}
 }
 
 func TestResponseWriterImplicitWriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
-	rw := &responseWriter{ResponseWriter: rec, status: http.StatusOK}
+	rw := &responseWriter{ResponseWriter: rec}
+	rw.status.Store(int32(http.StatusOK))
 
 	// Write without explicit WriteHeader should trigger implicit 200.
 	_, _ = rw.Write([]byte("hello"))
 
-	if rw.status != http.StatusOK {
-		t.Errorf("status = %d, want %d after implicit write", rw.status, http.StatusOK)
+	if got := int(rw.status.Load()); got != http.StatusOK {
+		t.Errorf("status = %d, want %d after implicit write", got, http.StatusOK)
 	}
-	if !rw.wroteHeader {
+	if !rw.wroteHeader.Load() {
 		t.Error("wroteHeader should be true after Write")
 	}
 }
