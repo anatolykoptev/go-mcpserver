@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,7 +16,7 @@ func TestRegisterHealth(t *testing.T) {
 		registerHealth(mux, cfg)
 
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -44,7 +45,7 @@ func TestRegisterHealth(t *testing.T) {
 		registerHealth(mux, Config{Name: "svc", Version: "1.0.0"})
 
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/live", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -64,7 +65,7 @@ func TestRegisterHealth(t *testing.T) {
 		registerHealth(mux, Config{Name: "svc", Version: "1.0.0"})
 
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/ready", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -91,7 +92,7 @@ func TestRegisterHealth(t *testing.T) {
 		registerHealth(mux, cfg)
 
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/ready", nil))
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -119,7 +120,7 @@ func TestRegisterHealth(t *testing.T) {
 		registerHealth(mux, cfg)
 
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)

@@ -39,7 +39,7 @@ func TestBearerAuthRejectsMCP(t *testing.T) {
 
 	// POST /mcp without token → 401
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -48,7 +48,7 @@ func TestBearerAuthRejectsMCP(t *testing.T) {
 
 	// /health should still work without auth
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("/health status = %d, want 200", rec.Code)
 	}
@@ -70,7 +70,7 @@ func TestBearerAuthAcceptsMCP(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer valid-token")
 	h.ServeHTTP(rec, req)
@@ -96,7 +96,7 @@ func TestBearerAuthScopeCheck(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer valid-token")
 	h.ServeHTTP(rec, req)
@@ -125,7 +125,7 @@ func TestProtectedResourceMetadata(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
