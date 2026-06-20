@@ -41,7 +41,7 @@ func TestChain(t *testing.T) {
 	handler := Chain(inner, Middleware(mwA), Middleware(mwB))
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 	// First middleware (mwA) is outermost: A wraps B wraps handler.
 	want := "A-before,B-before,handler,B-after,A-after"
@@ -59,7 +59,7 @@ func TestChainEmpty(t *testing.T) {
 	handler := Chain(inner)
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusTeapot)
@@ -77,7 +77,7 @@ func TestRecovery(t *testing.T) {
 		handler := Recovery(logger)(inner)
 
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/explode", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/explode", nil))
 
 		if rec.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -98,7 +98,7 @@ func TestRecovery(t *testing.T) {
 		handler := Recovery(testLogger())(inner)
 
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ok", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ok", nil))
 
 		if rec.Code != http.StatusCreated {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -116,7 +116,7 @@ func TestRequestID(t *testing.T) {
 		handler := RequestID()(inner)
 
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 		if capturedID == "" {
 			t.Fatal("expected generated request ID, got empty string")
@@ -139,7 +139,7 @@ func TestRequestID(t *testing.T) {
 		})
 		handler := RequestID()(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("X-Request-ID", "existing-id-123")
 
 		rec := httptest.NewRecorder()
@@ -172,7 +172,7 @@ func TestRequestLog(t *testing.T) {
 	handler := RequestLog(logger)(inner)
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/test", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/test", nil))
 
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusAccepted)
@@ -244,7 +244,7 @@ func TestCORS(t *testing.T) {
 	t.Run("allow all origins", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -261,7 +261,7 @@ func TestCORS(t *testing.T) {
 	t.Run("specific origin allowed", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"https://allowed.com", "https://other.com"}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://allowed.com")
 
 		rec := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestCORS(t *testing.T) {
 	t.Run("origin not allowed", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"https://allowed.com"}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://evil.com")
 
 		rec := httptest.NewRecorder()
@@ -292,7 +292,7 @@ func TestCORS(t *testing.T) {
 	t.Run("preflight returns 204", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
-		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 		req.Header.Set("Access-Control-Request-Method", "POST")
 
@@ -310,7 +310,7 @@ func TestCORS(t *testing.T) {
 	t.Run("no Origin header skips CORS headers", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		// No Origin header.
 
 		rec := httptest.NewRecorder()
@@ -327,7 +327,7 @@ func TestCORS(t *testing.T) {
 	t.Run("Max-Age header set", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}, MaxAge: 3600})(inner)
 
-		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -341,7 +341,7 @@ func TestCORS(t *testing.T) {
 	t.Run("Max-Age omitted when zero", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
-		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -358,7 +358,7 @@ func TestCORS(t *testing.T) {
 			AllowHeaders: []string{"X-Custom", "X-Other"},
 		})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()

@@ -85,7 +85,7 @@ func TestRESTListTools(t *testing.T) {
 	h := newRESTTestHandler(t, defaultTools()...)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -123,7 +123,7 @@ func TestRESTGetTool(t *testing.T) {
 
 	t.Run("existing tool", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/echo", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/echo", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
@@ -139,7 +139,7 @@ func TestRESTGetTool(t *testing.T) {
 
 	t.Run("nonexistent tool", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/nonexistent", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/nonexistent", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", rec.Code)
 		}
@@ -147,7 +147,7 @@ func TestRESTGetTool(t *testing.T) {
 
 	t.Run("invalid tool name", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/invalid%20name", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/invalid%20name", nil))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400", rec.Code)
 		}
@@ -160,7 +160,7 @@ func TestRESTCallTool(t *testing.T) {
 	t.Run("successful call", func(t *testing.T) {
 		body := `{"message":"hello"}`
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(body))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 
@@ -183,7 +183,7 @@ func TestRESTCallTool(t *testing.T) {
 
 	t.Run("empty body returns tool error", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", nil)
 		h.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusUnprocessableEntity {
@@ -201,7 +201,7 @@ func TestRESTCallTool(t *testing.T) {
 
 	t.Run("nonexistent tool", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/nonexistent", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/nonexistent", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 
@@ -212,7 +212,7 @@ func TestRESTCallTool(t *testing.T) {
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`{bad`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`{bad`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 
@@ -223,7 +223,7 @@ func TestRESTCallTool(t *testing.T) {
 
 	t.Run("invalid tool name", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/bad%20name", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/bad%20name", strings.NewReader(`{}`))
 		h.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
@@ -237,7 +237,7 @@ func TestRESTCallToolBodyLimit(t *testing.T) {
 
 	bigBody := strings.Repeat("x", maxBodySize+1)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(bigBody))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(bigBody))
 	req.Header.Set("Content-Type", contentTypeJSON)
 	h.ServeHTTP(rec, req)
 
@@ -253,7 +253,7 @@ func TestRESTOpenAPI(t *testing.T) {
 	h := newRESTTestHandler(t, defaultTools()...)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -322,7 +322,7 @@ func TestRESTOpenAPIWithAuth(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	h.ServeHTTP(rec, req)
 
@@ -368,7 +368,7 @@ func TestRESTBridgeDisabled(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
@@ -394,7 +394,7 @@ func TestRESTCustomPrefix(t *testing.T) {
 
 	t.Run("custom prefix works", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/tools", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v2/tools", nil))
 		if rec.Code != http.StatusOK {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
@@ -402,7 +402,7 @@ func TestRESTCustomPrefix(t *testing.T) {
 
 	t.Run("default prefix returns 404", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", rec.Code)
 		}
@@ -431,7 +431,7 @@ func TestRESTAuth(t *testing.T) {
 
 	t.Run("no token returns 401", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
@@ -439,7 +439,7 @@ func TestRESTAuth(t *testing.T) {
 
 	t.Run("valid token on list", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.Header.Set("Authorization", "Bearer test-token")
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -449,7 +449,7 @@ func TestRESTAuth(t *testing.T) {
 
 	t.Run("valid token on call", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`{"message":"hi"}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`{"message":"hi"}`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		req.Header.Set("Authorization", "Bearer test-token")
 		h.ServeHTTP(rec, req)
@@ -460,7 +460,7 @@ func TestRESTAuth(t *testing.T) {
 
 	t.Run("invalid token returns 401", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -471,7 +471,7 @@ func TestRESTAuth(t *testing.T) {
 
 func TestParseRequestBody(t *testing.T) {
 	t.Run("empty body", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
 		args, err := parseRequestBody(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -482,7 +482,7 @@ func TestParseRequestBody(t *testing.T) {
 	})
 
 	t.Run("valid JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"value","num":42}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(`{"key":"value","num":42}`))
 		args, err := parseRequestBody(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -496,7 +496,7 @@ func TestParseRequestBody(t *testing.T) {
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{bad`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(`{bad`))
 		_, err := parseRequestBody(req)
 		if err == nil {
 			t.Fatal("expected error for invalid JSON")
@@ -505,7 +505,7 @@ func TestParseRequestBody(t *testing.T) {
 
 	t.Run("oversized body", func(t *testing.T) {
 		big := strings.Repeat("x", maxBodySize+1)
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(big))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", strings.NewReader(big))
 		_, err := parseRequestBody(req)
 		if err == nil {
 			t.Fatal("expected error for oversized body")
@@ -540,7 +540,7 @@ func TestRESTToolNameInjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name+" GET", func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.toolPath, nil))
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.toolPath, nil))
 			if rec.Code != tt.wantStatus {
 				t.Errorf("GET %s: status = %d, want %d; body = %s",
 					tt.toolPath, rec.Code, tt.wantStatus, rec.Body.String())
@@ -548,7 +548,7 @@ func TestRESTToolNameInjection(t *testing.T) {
 		})
 		t.Run(tt.name+" POST", func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, tt.toolPath, strings.NewReader(`{}`))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, tt.toolPath, strings.NewReader(`{}`))
 			h.ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("POST %s: status = %d, want %d; body = %s",
@@ -560,7 +560,7 @@ func TestRESTToolNameInjection(t *testing.T) {
 	t.Run("very long valid name", func(t *testing.T) {
 		longName := strings.Repeat("a", 1000)
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/"+longName, nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/"+longName, nil))
 		// Valid chars, but tool doesn't exist → 404
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("long name: status = %d, want 404; body = %s", rec.Code, rec.Body.String())
@@ -569,7 +569,7 @@ func TestRESTToolNameInjection(t *testing.T) {
 
 	t.Run("empty name hits list route", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/", nil))
 		// /api/tools/ with trailing slash should not match {name} route
 		// It should either 404 or match a different handler
 		if rec.Code == http.StatusBadRequest {
@@ -579,7 +579,7 @@ func TestRESTToolNameInjection(t *testing.T) {
 
 	t.Run("hyphen and underscore valid", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools/my-tool_v2", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/my-tool_v2", nil))
 		// Valid name but nonexistent → 404
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("hyphen-underscore: status = %d, want 404", rec.Code)
@@ -608,7 +608,7 @@ func TestRESTConcurrentCalls(t *testing.T) {
 			msg := fmt.Sprintf("msg-%d", idx)
 			body := fmt.Sprintf(`{"message":"%s"}`, msg)
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(body))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(body))
 			req.Header.Set("Content-Type", contentTypeJSON)
 			h.ServeHTTP(rec, req)
 
@@ -673,10 +673,10 @@ func TestRESTResponseHeaders(t *testing.T) {
 			rec := httptest.NewRecorder()
 			var req *http.Request
 			if tt.body != "" {
-				req = httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+				req = httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, strings.NewReader(tt.body))
 				req.Header.Set("Content-Type", contentTypeJSON)
 			} else {
-				req = httptest.NewRequest(tt.method, tt.path, nil)
+				req = httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			}
 			h.ServeHTTP(rec, req)
 
@@ -701,7 +701,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 
 	t.Run("JSON array", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`[1,2,3]`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`[1,2,3]`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -711,7 +711,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 
 	t.Run("JSON number", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`42`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`42`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -721,7 +721,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 
 	t.Run("JSON string", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`"hello"`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`"hello"`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -731,7 +731,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 
 	t.Run("JSON null", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(`null`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(`null`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		// null unmarshals into nil map → parseRequestBody returns nil map
@@ -752,7 +752,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 			sb.WriteString(`}`)
 		}
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(sb.String()))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(sb.String()))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		// Should parse fine (Go json has no nesting limit by default)
@@ -765,7 +765,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 	t.Run("unicode in values", func(t *testing.T) {
 		body := `{"message":"привет мир 🌍"}`
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(body))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -797,7 +797,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 		}
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(body))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -808,7 +808,7 @@ func TestRESTBodyEdgeCases(t *testing.T) {
 	t.Run("body maxBodySize plus one", func(t *testing.T) {
 		body := strings.Repeat("x", maxBodySize+1)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/echo", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/echo", strings.NewReader(body))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -832,7 +832,7 @@ func TestRESTMethodNotAllowed(t *testing.T) {
 	for _, tt := range disallowed {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil))
 			if rec.Code == http.StatusOK {
 				t.Errorf("%s %s: status = 200, should be rejected", tt.method, tt.path)
 			}
@@ -841,7 +841,7 @@ func TestRESTMethodNotAllowed(t *testing.T) {
 
 	t.Run("GET tool with body ignored", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools/echo", strings.NewReader(`{"ignored":true}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools/echo", strings.NewReader(`{"ignored":true}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET with body: status = %d, want 200", rec.Code)
@@ -850,7 +850,7 @@ func TestRESTMethodNotAllowed(t *testing.T) {
 
 	t.Run("POST list endpoint", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools", strings.NewReader(`{}`))
 		h.ServeHTTP(rec, req)
 		// POST /api/tools should not match GET /tools handler
 		if rec.Code == http.StatusOK {
@@ -875,7 +875,7 @@ func TestRESTOpenAPISpecialChars(t *testing.T) {
 	h := newRESTTestHandler(t, injectionTool)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -922,7 +922,7 @@ func TestRESTAuthLoopbackBypass(t *testing.T) {
 
 	t.Run("loopback no token succeeds", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.RemoteAddr = "127.0.0.1:54321"
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -932,7 +932,7 @@ func TestRESTAuthLoopbackBypass(t *testing.T) {
 
 	t.Run("loopback wrong token still succeeds", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.RemoteAddr = "127.0.0.1:54321"
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		h.ServeHTTP(rec, req)
@@ -943,7 +943,7 @@ func TestRESTAuthLoopbackBypass(t *testing.T) {
 
 	t.Run("non-loopback no token fails", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.RemoteAddr = "192.168.1.1:54321"
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -953,7 +953,7 @@ func TestRESTAuthLoopbackBypass(t *testing.T) {
 
 	t.Run("ipv6 loopback succeeds", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil)
 		req.RemoteAddr = "[::1]:54321"
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -999,7 +999,7 @@ func TestRESTToolCallTimeout(t *testing.T) {
 
 	start := time.Now()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/tools/slow", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/slow", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", contentTypeJSON)
 	h.ServeHTTP(rec, req)
 	elapsed := time.Since(start)
@@ -1023,7 +1023,7 @@ func TestRESTCallFailTool(t *testing.T) {
 	h := newRESTTestHandler(t, failTool())
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/tools/fail", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/fail", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", contentTypeJSON)
 	h.ServeHTTP(rec, req)
 
@@ -1050,7 +1050,7 @@ func TestRESTEmptyServer(t *testing.T) {
 
 	t.Run("list returns empty array", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
@@ -1072,7 +1072,7 @@ func TestRESTEmptyServer(t *testing.T) {
 
 	t.Run("openapi valid with empty paths", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
@@ -1096,7 +1096,7 @@ func TestRESTEmptyServer(t *testing.T) {
 
 	t.Run("call nonexistent tool", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/tools/anything", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/tools/anything", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", contentTypeJSON)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusInternalServerError {
@@ -1123,7 +1123,7 @@ func TestRESTBridgeWithDisabledMCP(t *testing.T) {
 
 	t.Run("list tools returns 404", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tools", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tools", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 (REST bridge should not register when MCP disabled)", rec.Code)
 		}
@@ -1131,7 +1131,7 @@ func TestRESTBridgeWithDisabledMCP(t *testing.T) {
 
 	t.Run("openapi returns 404", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", rec.Code)
 		}

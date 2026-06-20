@@ -34,7 +34,7 @@ func TestHealthJSONSpecialChars(t *testing.T) {
 			registerHealth(mux, Config{Name: tt.svcName, Version: tt.version})
 
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+			mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
@@ -82,7 +82,7 @@ func TestHealthReadyErrorSpecialChars(t *testing.T) {
 			registerHealth(mux, cfg)
 
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+			mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/ready", nil))
 
 			if rec.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d, want 503", rec.Code)
@@ -189,7 +189,7 @@ func TestCORSEdgeCases(t *testing.T) {
 	t.Run("empty Origins allows nothing", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -203,7 +203,7 @@ func TestCORSEdgeCases(t *testing.T) {
 	t.Run("Max-Age on GET request (not just preflight)", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}, MaxAge: 600})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -219,7 +219,7 @@ func TestCORSEdgeCases(t *testing.T) {
 	t.Run("Vary header for specific origin on preflight", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"https://a.com"}})(inner)
 
-		req := httptest.NewRequest(http.MethodOptions, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/", nil)
 		req.Header.Set("Origin", "https://a.com")
 
 		rec := httptest.NewRecorder()
@@ -233,7 +233,7 @@ func TestCORSEdgeCases(t *testing.T) {
 	t.Run("wildcard does not set Vary", func(t *testing.T) {
 		handler := CORS(CORSConfig{Origins: []string{"*"}})(inner)
 
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		req.Header.Set("Origin", "https://a.com")
 
 		rec := httptest.NewRecorder()
