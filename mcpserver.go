@@ -89,6 +89,7 @@ func Run(server *mcp.Server, cfg Config) error {
 		Handler:      h,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
 	listenErr := make(chan error, 1)

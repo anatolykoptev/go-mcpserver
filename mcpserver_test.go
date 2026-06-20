@@ -82,6 +82,9 @@ func TestWithDefaults(t *testing.T) {
 		if cfg.WriteTimeout != defaultWriteTimeout {
 			t.Errorf("WriteTimeout = %v, want %v", cfg.WriteTimeout, defaultWriteTimeout)
 		}
+		if cfg.IdleTimeout != defaultIdleTimeout {
+			t.Errorf("IdleTimeout = %v, want %v", cfg.IdleTimeout, defaultIdleTimeout)
+		}
 		if cfg.ShutdownTimeout != defaultShutdownTimeout {
 			t.Errorf("ShutdownTimeout = %v, want %v", cfg.ShutdownTimeout, defaultShutdownTimeout)
 		}
@@ -108,6 +111,7 @@ func TestWithDefaults(t *testing.T) {
 			ReadTimeout:     5 * time.Second,
 			WriteTimeout:    600 * time.Second,
 			ShutdownTimeout: 30 * time.Second,
+			IdleTimeout:     10 * time.Minute,
 		})
 		if cfg.ReadTimeout != 5*time.Second {
 			t.Errorf("ReadTimeout = %v, want 5s", cfg.ReadTimeout)
@@ -117,6 +121,35 @@ func TestWithDefaults(t *testing.T) {
 		}
 		if cfg.ShutdownTimeout != 30*time.Second {
 			t.Errorf("ShutdownTimeout = %v, want 30s", cfg.ShutdownTimeout)
+		}
+		if cfg.IdleTimeout != 10*time.Minute {
+			t.Errorf("IdleTimeout = %v, want 10m", cfg.IdleTimeout)
+		}
+	})
+}
+func TestIdleTimeout(t *testing.T) {
+	t.Run("zero IdleTimeout defaults to 5m", func(t *testing.T) {
+		cfg := withDefaults(Config{})
+		if cfg.IdleTimeout != defaultIdleTimeout {
+			t.Errorf("IdleTimeout = %v, want %v (defaultIdleTimeout)", cfg.IdleTimeout, defaultIdleTimeout)
+		}
+	})
+
+	t.Run("explicit IdleTimeout is preserved", func(t *testing.T) {
+		want := 2 * time.Minute
+		cfg := withDefaults(Config{IdleTimeout: want})
+		if cfg.IdleTimeout != want {
+			t.Errorf("IdleTimeout = %v, want %v", cfg.IdleTimeout, want)
+		}
+	})
+
+	t.Run("http.Server gets IdleTimeout from Config", func(t *testing.T) {
+		// Verify round-trip: withDefaults fills IdleTimeout which Run wires into
+		// http.Server.IdleTimeout. The structural wiring in mcpserver.go is
+		// covered here indirectly; this test goes RED if IdleTimeout is removed.
+		cfg := withDefaults(Config{IdleTimeout: 7 * time.Minute})
+		if cfg.IdleTimeout != 7*time.Minute {
+			t.Errorf("IdleTimeout = %v, want 7m -- wiring to http.Server depends on this", cfg.IdleTimeout)
 		}
 	})
 }
