@@ -280,3 +280,43 @@ func newStallListener(t *testing.T) (*net.TCPListener, error) {
 	t.Cleanup(func() { _ = ln.Close() })
 	return ln, nil
 }
+
+// TestFireBoundedConcurrency verifies that Fire() goroutines are bounded
+// by WithMaxFireConcurrency. When the limit is reached, additional Fire()
+// calls are dropped instead of spawning unbounded goroutines.
+func TestFireBoundedConcurrency(t *testing.T) {
+	// Use a server with a slow tool so Fire goroutines stay alive.
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0"}, nil)
+	mcpserver.AddTool(srv, &mcp.Tool{Name: "slow"}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, error) {
+		time.Sleep(2 * time.Second)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil
+	})
+	ts := mcpserver.NewTestServer(t, srv, mcpserver.Config{Name: "test", Version: "1.0.0"})
+
+	c := mcpclient.New(ts.URL, mcpclient.WithMaxFireConcurrency(3))
+	defer c.Close() //nolint:errcheck
+
+	before := runtime.NumGoroutine()
+
+	// Fire 20 calls — only 3 should spawn goroutines, the rest should be dropped.
+	for i := 0; i < 20; i++ {
+		c.Fire(context.Background(), "slow", nil)
+	}
+
+	// Give dropped calls time to be rejected.
+	time.Sleep(200 * time.Millisecond)
+
+	// Goroutine count should not spike to 20 — at most 3 Fire goroutines
+	// plus transport/SSE overhead per call. Without the semaphore, 20 Fire
+	// calls would each spawn a Call goroutine + HTTP/SSE goroutines (~200+).
+	// With the semaphore, only 3 Fire calls proceed.
+	peak := runtime.NumGoroutine()
+	growth := peak - before
+
+	if growth > 60 {
+		t.Errorf("goroutine growth = %d (before=%d, peak=%d), want <= 60 — semaphore not bounding Fire() goroutines", growth, before, peak)
+	}
+
+	// Wait for the 3 goroutines to finish so we don't leak them into other tests.
+	time.Sleep(3 * time.Second)
+}
