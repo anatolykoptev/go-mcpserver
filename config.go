@@ -70,6 +70,23 @@ type Config struct {
 	JSONResponse      bool           // true = application/json instead of text/event-stream
 	MCPLogger         *slog.Logger   // separate logger for StreamableHTTP handler; nil = none
 
+	// DisableLocalhostProtection disables the SDK's automatic DNS rebinding
+	// protection. By default, requests from 127.0.0.1/[::1] with a non-localhost
+	// Host header are rejected with 403. Set true ONLY if behind a trusted
+	// reverse proxy on localhost that you control.
+	DisableLocalhostProtection bool
+
+	// KeepAlive sets the interval for periodic ping requests. If the peer
+	// fails to respond, the session is automatically closed. 0 = disabled.
+	// Recommended for stateful mode: 30s. Applied via ConfigureServer.
+	KeepAlive time.Duration
+
+	// SchemaCache caches JSON schemas to avoid repeated reflection. Useful
+	// for stateless deployments where a new Server is created per request.
+	// Create once with mcp.NewSchemaCache() and share across servers.
+	// Applied via ConfigureServer.
+	SchemaCache *mcp.SchemaCache
+
 	BearerAuth *BearerAuth // nil = no auth; wraps /mcp only (see auth.go)
 	RESTBridge bool        // enable /api/tools/* REST endpoints (auto-generated from MCP tools)
 	RESTPrefix string      // URL prefix for REST endpoints; default "/api"
