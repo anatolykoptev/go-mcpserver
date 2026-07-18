@@ -170,11 +170,12 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 		var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
 		}, &mcp.StreamableHTTPOptions{
-			Stateless:      stateless,
-			SessionTimeout: cfg.SessionTimeout,
-			EventStore:     cfg.EventStore,
-			JSONResponse:   cfg.JSONResponse,
-			Logger:         cfg.MCPLogger,
+			Stateless:                  stateless,
+			SessionTimeout:             cfg.SessionTimeout,
+			EventStore:                 cfg.EventStore,
+			JSONResponse:               cfg.JSONResponse,
+			Logger:                     cfg.MCPLogger,
+			DisableLocalhostProtection: cfg.DisableLocalhostProtection,
 		})
 
 		if cfg.BearerAuth != nil {
