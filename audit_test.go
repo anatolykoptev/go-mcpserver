@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -612,3 +615,242 @@ func newShortTTLBridge(t *testing.T, server *mcp.Server) *restBridge {
 
 var _ = auth.ErrInvalidToken
 var _ atomic.Int64
+
+// --- #24: REST bridge ctx.Done safety-net closes sessions before HTTP drain ---
+
+// TestRESTBridgeInFlightRequestSurvivesShutdown proves that in-flight REST
+// requests complete successfully when a signal arrives mid-request.
+//
+// This is a regression test for issue #24: in Run(), sigCtx was passed to
+// buildHandler → startRESTBridge. The safety-net goroutine listened on sigCtx
+// and fired immediately on signal, closing sessions before srv.Shutdown()
+// drained in-flight HTTP requests. The fix passes a separate non-cancellable
+// context to buildHandler so sessions stay open until the cleanup function
+// is called after srv.Shutdown().
+//
+// The test starts a real server with Run(), sends a slow REST tool call,
+// sends SIGINT mid-flight, and verifies the slow call completes successfully.
+func TestRESTBridgeInFlightRequestSurvivesShutdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "shutdown-order-test", Version: "0.0.1"}, nil)
+
+	// slow tool: takes 500ms to complete
+	mcp.AddTool(server, &mcp.Tool{Name: "slow"},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+			select {
+			case <-time.After(500 * time.Millisecond):
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil, nil
+			case <-ctx.Done():
+				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "cancelled"}}}, nil, nil
+			}
+		})
+
+	shutdownCalled := make(chan struct{})
+	cfg := Config{
+		Name:              "shutdown-order-test",
+		Version:           "0.0.1",
+		Port:              "19877",
+		RESTBridge:        true,
+		DisableRequestLog: true,
+		OnShutdown: func() {
+			close(shutdownCalled)
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(server, cfg)
+	}()
+
+	// Wait for server to start.
+	var lastErr error
+	for range 50 {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:19877/health") //nolint:noctx
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			lastErr = nil
+			break
+		}
+	}
+	if lastErr != nil {
+		t.Fatalf("server did not start: %v", lastErr)
+	}
+
+	// Start a slow REST tool call (uses its own context, not affected by signal).
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer reqCancel()
+	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		"http://127.0.0.1:19877/api/tools/slow", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by receiver after channel handoff
+		resultCh <- result{resp, err}
+	}()
+
+	// Give the request time to reach the tool handler (200ms in).
+	time.Sleep(200 * time.Millisecond)
+
+	// Send SIGINT to trigger shutdown while the slow tool is still running.
+	p, _ := os.FindProcess(os.Getpid())
+	_ = p.Signal(syscall.SIGINT)
+
+	// Wait for OnShutdown to fire (confirms signal was received).
+	select {
+	case <-shutdownCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnShutdown was not called within 5s")
+	}
+
+	// The slow tool call should complete successfully — the session
+	// must not be closed before the HTTP response is written.
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			t.Fatalf("in-flight REST request failed during shutdown: %v", r.err)
+		}
+		rawBody, _ := io.ReadAll(r.resp.Body)
+		_ = r.resp.Body.Close()
+		t.Logf("status=%d body=%s", r.resp.StatusCode, string(rawBody))
+		if r.resp.StatusCode != http.StatusOK && r.resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("unexpected status code: %d body=%s (session closed before HTTP drain)", r.resp.StatusCode, string(rawBody))
+		}
+		// Response should contain tool content, not a session-closed error.
+		if strings.Contains(string(rawBody), `"error"`) {
+			t.Fatalf("got error response (session closed before HTTP drain): %s", string(rawBody))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight REST request did not complete within 10s — session was closed before HTTP drain")
+	}
+
+	// Wait for Run() to return.
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s")
+	}
+}
+
+// TestRESTBridgeNewRequestAfterSignal proves that a NEW REST request (not
+// in-flight) arriving after signal but before srv.Shutdown() completes is
+// still served. This is the narrow window bug from issue #24: the safety-net
+// goroutine closed sessions immediately on signal, so new requests in the
+// window between signal and srv.Shutdown() were rejected.
+//
+// The test sends a request AFTER the signal is sent but before Run() returns.
+// With the fix (bridgeCtx separate from sigCtx), the session is still open
+// because the goroutine listens on bridgeCtx (not sigCtx).
+func TestRESTBridgeNewRequestAfterSignal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "new-req-test", Version: "0.0.1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "fast"},
+		func(_ context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil, nil
+		})
+
+	shutdownCalled := make(chan struct{})
+	cfg := Config{
+		Name:              "new-req-test",
+		Version:           "0.0.1",
+		Port:              "19878",
+		RESTBridge:        true,
+		DisableRequestLog: true,
+		OnShutdown: func() {
+			close(shutdownCalled)
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(server, cfg)
+	}()
+
+	// Wait for server to start.
+	var lastErr error
+	for range 50 {
+		time.Sleep(50 * time.Millisecond)
+		resp, err := http.Get("http://127.0.0.1:19878/health") //nolint:noctx
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			lastErr = nil
+			break
+		}
+	}
+	if lastErr != nil {
+		t.Fatalf("server did not start: %v", lastErr)
+	}
+
+	// Send SIGINT to trigger shutdown.
+	p, _ := os.FindProcess(os.Getpid())
+	_ = p.Signal(syscall.SIGINT)
+
+	// Wait for OnShutdown to fire (signal received, srv.Shutdown() starting).
+	select {
+	case <-shutdownCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnShutdown was not called within 5s")
+	}
+
+	// Immediately send a NEW REST request. With the bug (sigCtx passed to
+	// buildHandler), the safety-net goroutine has already closed sessions.
+	// With the fix (bridgeCtx separate), sessions are still open.
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reqCancel()
+	resp, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		"http://127.0.0.1:19878/api/tools/fast", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	// The request might fail if srv.Shutdown() has already closed the listener
+	// (that's OK — the server is shutting down). But it must NOT fail with a
+	// session-closed error. If the connection is accepted, the tool call
+	// should succeed.
+	httpResp, err := http.DefaultClient.Do(resp)
+	if err != nil {
+		// Connection refused is acceptable — srv.Shutdown() may have already
+		// closed the listener. This is not the bug we're testing.
+		t.Logf("request failed (likely listener already closed): %v", err)
+	} else {
+		rawBody, _ := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		t.Logf("status=%d body=%s", httpResp.StatusCode, string(rawBody))
+		if strings.Contains(string(rawBody), `"error"`) {
+			t.Fatalf("got error response (session closed before HTTP drain): %s", string(rawBody))
+		}
+	}
+
+	// Wait for Run() to return.
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s")
+	}
+}
