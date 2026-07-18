@@ -304,3 +304,14 @@ func TestStaticTokenVerifier(t *testing.T) {
 		t.Error("invalid token: expected error")
 	}
 }
+
+func TestStaticTokenVerifierEmptyRejects(t *testing.T) {
+	v := StaticTokenVerifier("")
+
+	// An empty bearer token must NOT be accepted — subtle.ConstantTimeCompare
+	// returns 1 for two empty byte slices, so a guard is needed.
+	_, err := v(context.Background(), "", nil)
+	if err == nil {
+		t.Error("empty token: expected error, got nil — empty StaticTokenVerifier accepts empty bearer tokens")
+	}
+}

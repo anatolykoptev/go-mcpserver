@@ -47,13 +47,16 @@ type restBridge struct {
 }
 
 // startRESTBridge creates an in-process MCP client, connects it to the server,
-// and registers REST endpoints on the mux.
-func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux, cfg Config, logger *slog.Logger) error {
+// and registers REST endpoints on the mux. Returns a cleanup function that
+// closes both MCP sessions — the caller MUST call it after the HTTP server
+// has shut down so in-flight REST requests can complete before their
+// underlying session is torn down.
+func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux, cfg Config, logger *slog.Logger) (func(), error) {
 	serverT, clientT := mcp.NewInMemoryTransports()
 
 	serverSession, err := server.Connect(ctx, serverT, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{
@@ -69,7 +72,7 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 			logger.Warn("REST bridge server session close after client failure",
 				slog.Any("error", cerr))
 		}
-		return err
+		return nil, err
 	}
 
 	prefix := cfg.RESTPrefix
@@ -98,20 +101,29 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 	}
 	mux.Handle(prefix+"/", handler)
 
+	// Close sessions when the context is cancelled (covers Build() testing
+	// and non-Run() embedders). Run() calls the returned cleanup AFTER
+	// srv.Shutdown() so in-flight requests drain first; the ctx.Done()
+	// path here is a safety net for non-Run() callers.
 	go func() {
 		<-ctx.Done()
+		_ = session.Close()
+		_ = serverSession.Close()
+	}()
+
+	cleanup := func() {
 		if err := session.Close(); err != nil {
 			logger.Error("REST bridge client session close error", slog.Any("error", err))
 		}
 		if err := serverSession.Close(); err != nil {
 			logger.Error("REST bridge server session close error", slog.Any("error", err))
 		}
-	}()
+	}
 
 	logger.Info("REST bridge enabled",
 		slog.String("prefix", prefix),
 	)
-	return nil
+	return cleanup, nil
 }
 
 // handleListTools returns all available tools as a JSON array.
@@ -240,6 +252,7 @@ func (b *restBridge) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tools = b.applyToolFilter(r.Context(), tools)
 	spec := b.buildOpenAPISpec(tools)
 	b.writeJSON(w, http.StatusOK, spec)
 }
@@ -346,8 +359,8 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 		spec["components"] = map[string]any{
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]string{
-					jsonKeyType:   "http",
-					"scheme": "bearer",
+					jsonKeyType: "http",
+					"scheme":    "bearer",
 				},
 			},
 		}
@@ -363,9 +376,9 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 var toolResponseSchema = map[string]any{
 	jsonKeyType: jsonTypeObject,
 	"properties": map[string]any{
-		jsonKeyContent:    map[string]any{jsonKeyType: jsonTypeArray, "items": map[string]string{jsonKeyType: jsonTypeObject}},
-		"structured": map[string]string{jsonKeyType: jsonTypeObject},
-		"is_error":   map[string]string{jsonKeyType: jsonTypeBoolean},
+		jsonKeyContent: map[string]any{jsonKeyType: jsonTypeArray, "items": map[string]string{jsonKeyType: jsonTypeObject}},
+		"structured":   map[string]string{jsonKeyType: jsonTypeObject},
+		"is_error":     map[string]string{jsonKeyType: jsonTypeBoolean},
 	},
 }
 

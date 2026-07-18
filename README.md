@@ -58,7 +58,7 @@ type Config struct {
 	Version string // version string (required)
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
-	WriteTimeout    time.Duration // default 120s
+	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
 	ReadTimeout     time.Duration // default 30s
 	ShutdownTimeout time.Duration // default 10s
 

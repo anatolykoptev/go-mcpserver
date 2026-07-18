@@ -1137,3 +1137,73 @@ func TestRESTBridgeWithDisabledMCP(t *testing.T) {
 		}
 	})
 }
+
+// TestRESTOpenAPIToolFilter verifies that the OpenAPI spec excludes tools
+// denied by BearerAuth.ToolFilter — matching the /api/tools list behaviour.
+//
+// The REST bridge uses an in-process MCP client whose in-memory transport
+// does not propagate HTTP request context into the server's MCP middleware
+// (RequestExtra.TokenInfo is nil). So the MCP-layer toolFilterMiddleware
+// cannot make per-token decisions. The HTTP-layer applyToolFilter is the
+// real enforcement point. handleListTools calls it; handleOpenAPI must too.
+func TestRESTOpenAPIToolFilter(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "filter-openapi", Version: "0.0.1"}, nil)
+	for _, name := range []string{"public", "secret"} {
+		n := name
+		mcp.AddTool(server, &mcp.Tool{Name: n}, func(_ context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok:" + n}}}, nil, nil
+		})
+	}
+
+	// defaultAllowFilter allows all when info is nil (MCP-layer sees nil
+	// from in-memory transport) but denies "secret" when real TokenInfo is
+	// present (HTTP-layer). This exposes the gap: without applyToolFilter
+	// in handleOpenAPI, "secret" leaks into the spec.
+	defaultAllowFilter := func(_ context.Context, name string, info *TokenInfo) bool {
+		if info == nil {
+			return true // MCP-layer (in-memory transport) — allows all
+		}
+		return name != "secret" // HTTP-layer — per-token decision
+	}
+
+	h, err := Build(server, Config{
+		Name:              "filter-openapi",
+		Version:           "0.0.1",
+		RESTBridge:        true,
+		DisableRequestLog: true,
+		BearerAuth: &BearerAuth{
+			Verifier:   StaticTokenVerifier("tok"),
+			ToolFilter: defaultAllowFilter,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var spec map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&spec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok {
+		t.Fatal("missing paths object")
+	}
+
+	if _, ok := paths["/api/tools/secret"]; ok {
+		t.Error("OpenAPI spec includes denied tool 'secret' — ToolFilter not applied to OpenAPI endpoint")
+	}
+	if _, ok := paths["/api/tools/public"]; !ok {
+		t.Error("OpenAPI spec missing permitted tool 'public'")
+	}
+}

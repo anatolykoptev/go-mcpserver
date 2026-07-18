@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,5 +179,108 @@ func TestMCPHooksPartial(t *testing.T) {
 	defer mu.Unlock()
 	if gotName != "echo" {
 		t.Errorf("OnToolResult got %q, want %q", gotName, "echo")
+	}
+}
+
+func TestResolveTimeoutCapsArgTimeout(t *testing.T) {
+	cfg := Config{ToolTimeout: 90 * time.Second}
+	cfg = withDefaults(cfg)
+
+	// An absurd timeout_secs should be capped, not passed through.
+	args := []byte(`{"timeout_secs": 9999999}`)
+	got := resolveTimeout("echo", args, cfg)
+	maxAllowed := cfg.MaxToolTimeout
+	if maxAllowed == 0 {
+		maxAllowed = cfg.ToolTimeout * 2
+	}
+	if got > maxAllowed {
+		t.Errorf("resolveTimeout with timeout_secs=9999999 returned %v, want <= %v (capped)", got, maxAllowed)
+	}
+}
+
+func TestResolveTimeoutRespectsReasonableArgTimeout(t *testing.T) {
+	cfg := Config{ToolTimeout: 90 * time.Second}
+	cfg = withDefaults(cfg)
+
+	// A reasonable timeout_secs below the cap should pass through.
+	args := []byte(`{"timeout_secs": 30}`)
+	got := resolveTimeout("echo", args, cfg)
+	if got != 30*time.Second {
+		t.Errorf("resolveTimeout with timeout_secs=30 returned %v, want 30s", got)
+	}
+}
+
+func TestToolTimeoutMiddlewareBoundedConcurrency(t *testing.T) {
+	cfg := Config{ToolTimeout: 5 * time.Second, MaxConcurrentTools: 2}
+	cfg = withDefaults(cfg)
+
+	var active int32
+	var maxActive int32
+
+	block := make(chan struct{})
+	handler := mcp.MethodHandler(func(_ context.Context, _ string, _ mcp.Request) (mcp.Result, error) {
+		cur := atomic.AddInt32(&active, 1)
+		for {
+			old := atomic.LoadInt32(&maxActive)
+			if cur <= old || atomic.CompareAndSwapInt32(&maxActive, old, cur) {
+				break
+			}
+		}
+		<-block // block until test releases
+		atomic.AddInt32(&active, -1)
+		return &mcp.CallToolResult{}, nil
+	})
+
+	mw := ToolTimeoutMiddleware(cfg)
+	wrapped := mw(handler)
+
+	makeReq := func() mcp.Request {
+		return &mcp.ServerRequest[*mcp.CallToolParamsRaw]{
+			Params: &mcp.CallToolParamsRaw{Name: "blocked"},
+		}
+	}
+
+	// Launch 5 concurrent calls — only 2 should run, 3 should be rejected.
+	var wg sync.WaitGroup
+	var rejected int32
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, _ := wrapped(context.Background(), methodToolsCall, makeReq())
+			if cr, ok := result.(*mcp.CallToolResult); ok && cr.IsError {
+				if len(cr.Content) > 0 {
+					if tc, ok := cr.Content[0].(*mcp.TextContent); ok && strings.Contains(tc.Text, "max concurrent") {
+						atomic.AddInt32(&rejected, 1)
+					}
+				}
+			}
+		}()
+	}
+
+	// Give goroutines time to start and hit the semaphore.
+	time.Sleep(100 * time.Millisecond)
+	close(block) // release the 2 that acquired the semaphore
+	wg.Wait()
+
+	if max := atomic.LoadInt32(&maxActive); max > 2 {
+		t.Errorf("max concurrent tools = %d, want <= 2", max)
+	}
+	if got := atomic.LoadInt32(&rejected); got < 3 {
+		t.Errorf("rejected = %d, want >= 3 (5 calls, 2 slots)", got)
+	}
+}
+
+func TestDisableEventStore(t *testing.T) {
+	cfg := Config{Name: "test", Version: "0.0.1", DisableEventStore: true}
+	cfg = withDefaults(cfg)
+	if cfg.EventStore != nil {
+		t.Error("DisableEventStore=true but EventStore was auto-enabled")
+	}
+
+	cfg2 := Config{Name: "test", Version: "0.0.1"}
+	cfg2 = withDefaults(cfg2)
+	if cfg2.EventStore == nil {
+		t.Error("DisableEventStore=false (default) but EventStore was not auto-enabled")
 	}
 }

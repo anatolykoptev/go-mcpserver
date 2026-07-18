@@ -72,8 +72,8 @@ func TestRequestLogSkipsHealthByDefault(t *testing.T) {
 	}
 
 	cases := []struct {
-		path     string
-		wantHit  bool // true = expect Info-level "request" log line
+		path    string
+		wantHit bool // true = expect Info-level "request" log line
 	}{
 		{"/health", false},
 		{"/health/live", false},
@@ -513,7 +513,7 @@ func TestRESTToolsCacheRefreshesAfterTTL(t *testing.T) {
 		DisableRequestLog: true,
 		Context:           ctx,
 	}
-	if err := startRESTBridge(ctx, server, mux, cfg, slog.Default()); err != nil {
+	if _, err := startRESTBridge(ctx, server, mux, cfg, slog.Default()); err != nil {
 		t.Fatal(err)
 	}
 
