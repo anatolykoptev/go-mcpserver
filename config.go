@@ -102,6 +102,28 @@ func withDefaults(cfg Config) Config {
 			cfg.Port = defaultPort
 		}
 	}
+	applyTimeoutDefaults(&cfg)
+	if !cfg.LogSkipDefaults && cfg.LogSkipPaths == nil {
+		cfg.LogSkipPaths = defaultLogSkipPaths()
+	}
+	// Enable stream resumption by default — prevents lost events after reconnect.
+	// DisableEventStore allows consumers to opt out (e.g. for stateless deployments
+	// where the 10 MiB MemoryEventStore limit causes 500s under high load).
+	if cfg.EventStore == nil && !cfg.DisableEventStore {
+		cfg.EventStore = mcp.NewMemoryEventStore(nil)
+	}
+	// Warn about unbounded session memory growth in stateful mode.
+	stateless := cfg.Stateless == nil || *cfg.Stateless
+	if !stateless && cfg.SessionTimeout == 0 {
+		slog.Warn("Config.Stateless=false with SessionTimeout=0 — sessions never expire and memory grows unbounded. Set SessionTimeout (e.g. 30m) for stateful mode.")
+	}
+	return cfg
+}
+
+// applyTimeoutDefaults fills in zero-valued timeout/concurrency fields with
+// their defaults. Extracted from withDefaults to keep cyclomatic complexity
+// under the cyclop limit.
+func applyTimeoutDefaults(cfg *Config) {
 	if cfg.ReadTimeout == 0 {
 		cfg.ReadTimeout = defaultReadTimeout
 	}
@@ -123,21 +145,6 @@ func withDefaults(cfg Config) Config {
 	if cfg.MaxConcurrentTools == 0 {
 		cfg.MaxConcurrentTools = defaultMaxConcurrentTools
 	}
-	if !cfg.LogSkipDefaults && cfg.LogSkipPaths == nil {
-		cfg.LogSkipPaths = defaultLogSkipPaths()
-	}
-	// Enable stream resumption by default — prevents lost events after reconnect.
-	// DisableEventStore allows consumers to opt out (e.g. for stateless deployments
-	// where the 10 MiB MemoryEventStore limit causes 500s under high load).
-	if cfg.EventStore == nil && !cfg.DisableEventStore {
-		cfg.EventStore = mcp.NewMemoryEventStore(nil)
-	}
-	// Warn about unbounded session memory growth in stateful mode.
-	stateless := cfg.Stateless == nil || *cfg.Stateless
-	if !stateless && cfg.SessionTimeout == 0 {
-		slog.Warn("Config.Stateless=false with SessionTimeout=0 — sessions never expire and memory grows unbounded. Set SessionTimeout (e.g. 30m) for stateful mode.")
-	}
-	return cfg
 }
 
 func applyMCPMiddleware(server *mcp.Server, cfg Config) {
