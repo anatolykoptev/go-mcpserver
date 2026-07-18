@@ -102,23 +102,29 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 	mux.Handle(prefix+"/", handler)
 
 	// Close sessions when the context is cancelled (covers Build() testing
-	// and non-Run() embedders). Run() calls the returned cleanup AFTER
-	// srv.Shutdown() so in-flight requests drain first; the ctx.Done()
-	// path here is a safety net for non-Run() callers.
+	// and non-Run() embedders). Run() passes a non-cancellable context so
+	// this goroutine only fires on abnormal exit; the cleanup function is
+	// the authoritative close path in Run() mode. sync.Once ensures both
+	// paths never double-close (Close is idempotent, but this prevents
+	// racing on the error log paths).
+	var closeOnce sync.Once
+	doClose := func() {
+		closeOnce.Do(func() {
+			if err := session.Close(); err != nil {
+				logger.Error("REST bridge client session close error", slog.Any("error", err))
+			}
+			if err := serverSession.Close(); err != nil {
+				logger.Error("REST bridge server session close error", slog.Any("error", err))
+			}
+		})
+	}
+
 	go func() {
 		<-ctx.Done()
-		_ = session.Close()
-		_ = serverSession.Close()
+		doClose()
 	}()
 
-	cleanup := func() {
-		if err := session.Close(); err != nil {
-			logger.Error("REST bridge client session close error", slog.Any("error", err))
-		}
-		if err := serverSession.Close(); err != nil {
-			logger.Error("REST bridge server session close error", slog.Any("error", err))
-		}
-	}
+	cleanup := doClose
 
 	logger.Info("REST bridge enabled",
 		slog.String("prefix", prefix),

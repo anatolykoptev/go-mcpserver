@@ -87,7 +87,17 @@ func Run(server *mcp.Server, cfg Config) error {
 	}
 	defer cancel()
 
-	h, err := buildHandler(sigCtx, server, cfg, logger)
+	// Pass a separate context to buildHandler — NOT sigCtx. The REST bridge
+	// safety-net goroutine listens on this ctx; if we passed sigCtx, the
+	// goroutine would close sessions immediately on signal, before
+	// srv.Shutdown() drains in-flight HTTP requests. Using a non-cancellable
+	// context ensures sessions stay open until the cleanup function is called
+	// after srv.Shutdown(). The defer cancel() below is a safety net for
+	// abnormal Run() exit (error paths).
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+
+	h, err := buildHandler(bridgeCtx, server, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("mcpserver: %w", err)
 	}
