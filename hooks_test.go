@@ -284,3 +284,89 @@ func TestDisableEventStore(t *testing.T) {
 		t.Error("DisableEventStore=false (default) but EventStore was not auto-enabled")
 	}
 }
+
+// TestToolKeepaliveHeartbeat verifies that with ToolKeepaliveInterval set, a
+// long-running tool call emits progress notifications to the client while it
+// runs (SSE + stateless, matching the go-wp deployment) and still returns its
+// result. Without the heartbeat the client sees zero bytes until the tool
+// completes and a shorter client/proxy timeout would abandon the call.
+func TestToolKeepaliveHeartbeat(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "ka-test", Version: "0.0.1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "slow"}, func(ctx context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+		select {
+		case <-time.After(220 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil, nil
+	})
+
+	ts := NewTestServer(t, server, Config{
+		Name:                  "ka-test",
+		Version:               "0.0.1",
+		ToolKeepaliveInterval: 30 * time.Millisecond,
+		DisableRequestLog:     true,
+	})
+
+	var progress atomic.Int32
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.0.1"}, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, _ *mcp.ProgressNotificationClientRequest) {
+			progress.Add(1)
+		},
+	})
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:             ts.URL + "/mcp",
+		HTTPClient:           ts.Client(),
+		DisableStandaloneSSE: true,
+	}
+	sess, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sess.Close()
+
+	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "slow"})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool returned error result: %+v", res.Content)
+	}
+	if got := progress.Load(); got < 1 {
+		t.Errorf("expected >=1 progress heartbeat during the 220ms call (interval 30ms), got %d", got)
+	}
+}
+
+func TestResolveToolTimeoutMode(t *testing.T) {
+	cases := []struct {
+		mode ToolTimeoutMode
+		want time.Duration
+	}{
+		{ToolTimeoutModeShort, ToolTimeoutShort},
+		{ToolTimeoutModeDefault, ToolTimeoutDefault},
+		{ToolTimeoutModeLong, ToolTimeoutLong},
+		{ToolTimeoutModeCustom, ToolTimeoutDefault}, // custom without explicit ToolTimeout → default tier
+		{"", ToolTimeoutDefault},
+		{"bogus", ToolTimeoutDefault},
+	}
+	for _, c := range cases {
+		if got := resolveToolTimeoutMode(c.mode); got != c.want {
+			t.Errorf("resolveToolTimeoutMode(%q) = %v, want %v", c.mode, got, c.want)
+		}
+	}
+}
+
+func TestWithDefaultsToolTimeoutMode(t *testing.T) {
+	// Mode selects the tier when ToolTimeout is unset.
+	if got := withDefaults(Config{Name: "x", Version: "y", ToolTimeoutMode: ToolTimeoutModeLong}).ToolTimeout; got != ToolTimeoutLong {
+		t.Errorf("mode=long → ToolTimeout = %v, want %v", got, ToolTimeoutLong)
+	}
+	// An explicit ToolTimeout always wins over the mode.
+	if got := withDefaults(Config{Name: "x", Version: "y", ToolTimeout: 42 * time.Second, ToolTimeoutMode: ToolTimeoutModeLong}).ToolTimeout; got != 42*time.Second {
+		t.Errorf("explicit ToolTimeout with mode=long = %v, want 42s", got)
+	}
+	// Zero-value: default tier (90s), not the old implicit value.
+	if got := withDefaults(Config{Name: "x", Version: "y"}).ToolTimeout; got != ToolTimeoutDefault {
+		t.Errorf("no mode → ToolTimeout = %v, want %v", got, ToolTimeoutDefault)
+	}
+}
