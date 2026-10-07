@@ -34,6 +34,13 @@ func isStdio() bool {
 	return false
 }
 
+// wantsStdio resolves the transport: an explicit Config.Transport wins; the
+// --stdio os.Args scan is the backward-compat fallback for callers without a
+// flag layer.
+func wantsStdio(cfg Config) bool {
+	return cfg.Transport == TransportStdio || isStdio()
+}
+
 // Serve creates a server from cfg (applying server-only options like KeepAlive
 // and SchemaCache), lets register add tools/handlers, then runs it. It is the
 // one-call alternative to the NewServer + Run pair: config lives in ONE place,
@@ -60,7 +67,7 @@ func Run(server *mcp.Server, cfg Config) error {
 		return errors.New("mcpserver: server must not be nil when DisableMCP is false")
 	}
 	cfg = withDefaults(cfg)
-	stdio := isStdio()
+	stdio := wantsStdio(cfg)
 
 	// Wire up REST bridge cleanup receiver — buildHandler will populate
 	// restBridgeCleanup if RESTBridge is enabled, and we call it AFTER
