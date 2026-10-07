@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -135,6 +136,13 @@ type Config struct {
 	Logger     *slog.Logger    // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
 	OnShutdown func()          // called before HTTP shutdown
 
+	// Transport selects the MCP transport. TransportStdio ("stdio") runs over
+	// stdin/stdout; "" (empty) or TransportHTTP ("http") = HTTP. Prefer
+	// passing a parsed flag value over relying on the legacy --stdio os.Args
+	// scan — a cobra/pflag layer would reject the flag before Run ever sees
+	// it (vaelor #857).
+	Transport string
+
 	// onRESTBridgeCleanup is set internally by Run() to receive the REST bridge
 	// cleanup function from buildHandler, so it can be called AFTER srv.Shutdown()
 	// completes (not on signal receipt, which would close sessions mid-request).
@@ -147,6 +155,9 @@ func validate(cfg Config) error {
 	}
 	if cfg.Version == "" {
 		return errors.New("mcpserver: Config.Version is required")
+	}
+	if cfg.Transport != "" && cfg.Transport != TransportStdio && cfg.Transport != TransportHTTP {
+		return fmt.Errorf("mcpserver: unknown transport %q", cfg.Transport)
 	}
 	return nil
 }

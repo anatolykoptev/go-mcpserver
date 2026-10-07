@@ -620,3 +620,39 @@ func TestRunIntegration(t *testing.T) {
 		t.Fatal("Run did not return within 5s")
 	}
 }
+
+// TestWantsStdio guards the Config.Transport contract (vaelor #857): a parsed
+// flag value must select the transport even when os.Args carries no --stdio —
+// a cobra/pflag consumer would have consumed (and validated) the flag before
+// Run runs. Removing the Transport branch makes this test fail.
+func TestWantsStdio(t *testing.T) {
+	t.Parallel()
+
+	if !wantsStdio(Config{Transport: TransportStdio}) {
+		t.Error("wantsStdio(Transport=stdio) = false, want true")
+	}
+	// os.Args in a test binary never carries --stdio, so these exercise the
+	// parsed-value path only.
+	if wantsStdio(Config{Transport: TransportHTTP}) {
+		t.Error("wantsStdio(Transport=http) = true, want false")
+	}
+	if wantsStdio(Config{}) {
+		t.Error("wantsStdio(empty) = true, want false")
+	}
+}
+
+// TestValidateTransport rejects unknown transport strings at startup rather
+// than silently falling back to HTTP.
+func TestValidateTransport(t *testing.T) {
+	t.Parallel()
+
+	base := Config{Name: "svc", Version: "0"}
+	for _, tr := range []string{"", TransportStdio, TransportHTTP} {
+		if err := validate(Config{Transport: tr, Name: base.Name, Version: base.Version}); err != nil {
+			t.Errorf("validate(Transport=%q) = %v, want nil", tr, err)
+		}
+	}
+	if err := validate(Config{Name: "svc", Version: "0", Transport: "bogus"}); err == nil {
+		t.Error("validate(Transport=bogus) = nil, want error")
+	}
+}
