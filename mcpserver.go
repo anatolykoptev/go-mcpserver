@@ -6,6 +6,9 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +18,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -275,6 +279,11 @@ func applyBearerAuth(handler http.Handler, cfg *BearerAuth) http.Handler {
 			}
 			slog.Warn(msg)
 		})
+		if cfg.ToolFilter != nil && cfg.LoopbackIdentity == nil {
+			warnLoopbackFilterOnce.Do(func() {
+				slog.Warn("BearerAuth.ToolFilter is configured but LoopbackBypass requests carry no identity — ToolFilter receives nil TokenInfo for every bypassed caller and cannot distinguish them. Set BearerAuth.LoopbackIdentity to attach an explicit identity, or the filter silently decides on a nil identity.")
+			})
+		}
 	}
 	metaPath := cfg.ResourceMetadataPath
 	if metaPath == "" && cfg.Metadata != nil {
@@ -289,12 +298,66 @@ func applyBearerAuth(handler http.Handler, cfg *BearerAuth) http.Handler {
 	if !cfg.LoopbackBypass {
 		return authed
 	}
+	loopback := loopbackChain(handler, cfg)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isLoopback(r) {
-			handler.ServeHTTP(w, r)
+			loopback.ServeHTTP(w, r)
 			return
 		}
 		authed.ServeHTTP(w, r)
+	})
+}
+
+// warnLoopbackFilterOnce fires the "ToolFilter sees nil identity under
+// LoopbackBypass" warning at most once per process.
+var warnLoopbackFilterOnce sync.Once
+
+// loopbackTokenBytes is the entropy length of loopbackSyntheticToken.
+const loopbackTokenBytes = 32
+
+// loopbackSyntheticToken is generated per process so nothing outside this
+// code path can present it. Its only purpose is to route a bypassed
+// request through auth.RequireBearerToken's context plumbing — the sole
+// public way to populate RequestExtra.TokenInfo / auth.TokenInfoFromContext.
+var loopbackSyntheticToken = func() string {
+	b := make([]byte, loopbackTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("mcpserver: generate loopback token: %v", err))
+	}
+	return "loopback-" + hex.EncodeToString(b)
+}()
+
+// loopbackChain wraps handler so LoopbackBypass-admitted requests run
+// through the same TokenInfo plumbing as bearer-authenticated ones when
+// cfg.LoopbackIdentity is set. Without it they pass through unauthenticated
+// (TokenInfo nil) — the documented pre-LoopbackIdentity behaviour.
+func loopbackChain(handler http.Handler, cfg *BearerAuth) http.Handler {
+	if cfg.LoopbackIdentity == nil {
+		return handler
+	}
+	verifier := func(_ context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(loopbackSyntheticToken)) != 1 {
+			return nil, auth.ErrInvalidToken
+		}
+		info, err := cfg.LoopbackIdentity(r)
+		if err != nil {
+			return nil, err
+		}
+		if info == nil {
+			return nil, fmt.Errorf("%w: nil loopback identity", auth.ErrInvalidToken)
+		}
+		out := *info
+		if out.Expiration.IsZero() {
+			out.Expiration = time.Now().Add(time.Hour)
+		}
+		return &out, nil
+	}
+	authed := auth.RequireBearerToken(verifier,
+		&auth.RequireBearerTokenOptions{Scopes: cfg.Scopes})(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.Header.Set("Authorization", "Bearer "+loopbackSyntheticToken)
+		authed.ServeHTTP(w, r2)
 	})
 }
 
