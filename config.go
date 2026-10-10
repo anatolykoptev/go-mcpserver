@@ -288,6 +288,9 @@ func applyMCPMiddleware(server *mcp.Server, cfg Config) {
 	if len(cfg.MCPSendingMiddleware) > 0 {
 		server.AddSendingMiddleware(cfg.MCPSendingMiddleware...)
 	}
+	// Registered last = outermost: sees the tools/list result after every
+	// other middleware (e.g. ToolFilter) has shaped it.
+	server.AddReceivingMiddleware(portableToolsListMiddleware())
 }
 
 func defaultLogSkipPaths() []string {
