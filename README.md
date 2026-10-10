@@ -73,7 +73,7 @@ type Config struct {
 	Middleware        []Middleware  // custom middleware, applied after built-ins
 	CORSOrigins       []string     // nil = no CORS; ["*"] = allow all
 	CORSMaxAge        int          // preflight Max-Age in seconds; 0 = omit
-	CORSAllowHeaders  []string     // nil = default (Content-Type, Authorization, X-Request-ID)
+	CORSAllowHeaders  []string     // nil = default (Content-Type, Authorization, X-Request-ID, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID, Mcp-Method, Mcp-Name); Mcp-Session-Id is also exposed
 	ReadinessCheck    func() error // nil = /health/ready always returns 200
 
 	DisableRecovery   bool            // default false (recovery ON)
@@ -83,7 +83,9 @@ type Config struct {
 	// MCP session options
 	KeepAlive                time.Duration     // ping interval; 0 = disabled; use NewServer to apply
 	SchemaCache              *mcp.SchemaCache  // JSON schema cache for stateless mode; use NewServer to apply
+	SupportedProtocolVersions []string         // nil = all SDK versions; {"2025-11-25"} opts out of 2026-07-28; use NewServer to apply
 	DisableLocalhostProtection bool            // DNS rebinding protection; set true ONLY behind trusted reverse proxy
+	MaxRequestBodyBytes       int64            // POST /mcp body cap; 0 = 16 MiB, <0 = unlimited (applies in Run/Build/Serve)
 
 	Context    context.Context // nil → internal signal.NotifyContext(SIGINT, SIGTERM)
 	Logger     *slog.Logger    // nil → auto
@@ -100,10 +102,58 @@ derived from `Config`:
 |---|---|---|
 | `KeepAlive` | `KeepAlive` | Periodic ping; auto-closes session if peer doesn't respond |
 | `SchemaCache` | `SchemaCache` | Caches JSON schemas; avoids repeated reflection in stateless mode |
+| `SupportedProtocolVersions` | `SupportedProtocolVersions` | Narrows the MCP protocol versions the server negotiates (rollback lever); an unknown version panics at startup naming the valid set |
 
 If you use `mcp.NewServer(impl, nil)` directly, these fields are ignored — `Run`/`Build`
-apply middleware (ToolTimeout, ToolFilter, custom) regardless, but `KeepAlive` and
-`SchemaCache` can only be set at server creation time.
+apply middleware (ToolTimeout, ToolFilter, custom) regardless, but `KeepAlive`,
+`SchemaCache` and `SupportedProtocolVersions` can only be set at server creation
+time. `Run`/`Build` log a warning when any of them is set on their Config.
+
+`MaxRequestBodyBytes` is **not** NewServer-only: it configures the HTTP handler, so
+`Run`, `Build` and `Serve` all honour it.
+
+## Upgrading to v0.20 / go-sdk v1.8
+
+v0.20 moves from go-sdk v1.6.1 to v1.8.0 (MCP protocol 2026-07-28). No Go API
+changed, but consumers can notice:
+
+- **2026-07-28 is served by default.** Stateless servers (the default) answer
+  `server/discover` and per-request `_meta` requests; 2025-11-25 and older clients
+  keep working. Python MCP SDK 2.0 clients now connect.
+- **Stateless servers issue no session IDs to ANY client**, including 2025
+  clients: `req.Session.ID()` is `""` and `DELETE /mcp` returns `405`. Temporary
+  SDK opt-out (removed in go-sdk v1.9.0): `MCPGODEBUG=allowsessionsinstateless=1`.
+  Code that keys state on the session ID must stop doing so or run stateful.
+- **Request body cap.** go-sdk v1.8.0 caps POST bodies at 4 MiB (v1.6.1 had no
+  limit). go-mcpserver sets its own default of **16 MiB** via
+  `Config.MaxRequestBodyBytes`; larger requests get `413`. `0` = 16 MiB, a
+  negative value disables the cap (untrusted-client servers should not). The
+  `mcpclient` package surfaces a 413 or any JSON-RPC error as `ErrRejected`, never
+  as `ErrUnreachable`, so `WithUnreachableTolerant(true)` no longer hides it.
+- **Stateful servers (`Stateless=false`)** answer a 2026-07-28 request with a
+  JSON-RPC `-32022` (UnsupportedProtocolVersion) error listing the legacy versions,
+  instead of a plain-text 400; SDK clients renegotiate down on their own.
+  (`MCPGODEBUG=plaintextstatefulrejection=1` restores the old body, until v1.9.0.)
+- `ToolAnnotations.ReadOnlyHint` / `IdempotentHint` are always serialized, even
+  when `false` (`MCPGODEBUG=hintomitempty=1` restores omitempty, until v1.9.0).
+- Invalid tool/method params return JSON-RPC `-32602` (wrapped) instead of a raw
+  error.
+- List results (`tools/list`, `prompts/list`, `resources/list`, `server/discover`)
+  carry `ttlMs` and `cacheScope`.
+- On 2026-07-28 sessions `ping`, `logging/setLevel` and `resources/subscribe` /
+  `unsubscribe` return `MethodNotFound`, and server-to-client requests
+  (sampling, elicitation, roots) go through multi-round-trip requests (MRTR)
+  instead of fresh JSON-RPC requests. `ToolKeepaliveInterval` progress
+  notifications are unaffected.
+- Default CORS allow-headers now include `Mcp-Protocol-Version`, `Mcp-Session-Id`,
+  `Last-Event-ID`, `Mcp-Method`, `Mcp-Name` and `Mcp-Session-Id` is exposed.
+  `Mcp-Param-*` (tools using `x-mcp-header`) is a dynamic prefix: list those
+  names in `CORSAllowHeaders`.
+- **Rollback lever:** `Config.SupportedProtocolVersions: []string{"2025-11-25"}`
+  (via `NewServer`/`Serve`) pins a service to the old protocol without a code
+  revert. There is deliberately no env var.
+- `Config.EventStore` / `DisableEventStore` still compile and apply to 2025-11-25
+  traffic; resumability does not exist on 2026-07-28.
 
 **Stateless mode + SchemaCache:**
 
