@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/anatolykoptev/go-mcpserver/compare/v0.20.0...v0.21.0) (2026-10-10)
+
+
+### Added
+
+* **transport:** cancel tool handlers when the client disconnects ([#42](https://github.com/anatolykoptev/go-mcpserver/issues/42)) ([75d142b](https://github.com/anatolykoptev/go-mcpserver/commit/75d142bc9931122ee14ece29a5e668502f6c1324))
+
+
+### Fixed
+
+* **schema:** normalize boolean subschemas so every MCP client accepts tools/list ([#41](https://github.com/anatolykoptev/go-mcpserver/issues/41)) ([5f80cfb](https://github.com/anatolykoptev/go-mcpserver/commit/5f80cfb82b5a2143df7ee9f02d83ae3a283d5c42))
+
 ## [0.20.0](https://github.com/anatolykoptev/go-mcpserver/compare/v0.19.0...v0.20.0) (2026-10-10)
 
 
