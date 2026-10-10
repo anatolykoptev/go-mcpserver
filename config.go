@@ -43,6 +43,11 @@ const (
 	portEnvVar                = "MCP_PORT"
 )
 
+// defaultMaxRequestBodyBytes is go-mcpserver's own cap for POST /mcp bodies
+// when Config.MaxRequestBodyBytes is 0: 16 MiB, so base64 payloads that worked
+// on go-sdk v1.6.1 (no limit) keep working. The go-sdk v1.8.0 default is 4 MiB.
+const defaultMaxRequestBodyBytes int64 = 16 << 20
+
 // Config controls how the MCP server runs.
 type Config struct {
 	Name    string // service name for /health + logs (required)
@@ -114,6 +119,14 @@ type Config struct {
 	// reverse proxy on localhost that you control.
 	DisableLocalhostProtection bool
 
+	// MaxRequestBodyBytes caps the size of a single POST /mcp request body;
+	// larger requests are rejected with 413 Request Entity Too Large. 0 = 16 MiB
+	// (go-mcpserver default; go-sdk v1.8.0 itself defaults to 4 MiB and v1.6.1
+	// had no limit). A negative value disables the limit entirely (go-sdk
+	// semantics) - do not use that on servers exposed to untrusted clients.
+	// Honoured by Run and Build as well as Serve.
+	MaxRequestBodyBytes int64
+
 	// SupportedProtocolVersions restricts the MCP protocol versions the server
 	// advertises and negotiates (e.g. {"2025-11-25"} to opt out of 2026-07-28
 	// without a code revert). nil/empty = every version the SDK supports. The
@@ -180,6 +193,9 @@ func withDefaults(cfg Config) Config {
 		}
 	}
 	applyTimeoutDefaults(&cfg)
+	if cfg.MaxRequestBodyBytes == 0 {
+		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
+	}
 	if !cfg.LogSkipDefaults && cfg.LogSkipPaths == nil {
 		cfg.LogSkipPaths = defaultLogSkipPaths()
 	}
