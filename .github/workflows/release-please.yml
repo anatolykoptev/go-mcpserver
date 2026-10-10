@@ -1,0 +1,23 @@
+name: release-please
+# Conventional-commit-driven versioning only (tag + GitHub release + changelog).
+# Release PRs are merged by the operator after checks; there is no auto-merge step.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+permissions: {}
+jobs:
+  release-please:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: master
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
