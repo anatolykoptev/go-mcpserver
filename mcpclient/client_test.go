@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -319,4 +320,50 @@ func TestFireBoundedConcurrency(t *testing.T) {
 
 	// Wait for the 3 goroutines to finish so we don't leak them into other tests.
 	time.Sleep(3 * time.Second)
+}
+
+// T6: mcpclient negotiates protocol 2026-07-28 (server/discover, no legacy
+// initialize) against a default go-mcpserver and can call a tool.
+func TestCall_Negotiates_2026_07_28(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0"}, nil)
+	type echoArgs struct {
+		Msg string `json:"msg"`
+	}
+	mcpserver.AddTool(srv, &mcp.Tool{Name: "echo", Description: "returns msg"},
+		func(_ context.Context, _ *mcp.CallToolRequest, a echoArgs) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: a.Msg}}}, nil
+		})
+
+	var mu sync.Mutex
+	var methods []string
+	record := func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			mu.Lock()
+			methods = append(methods, method)
+			mu.Unlock()
+			return next(ctx, method, req)
+		}
+	}
+	ts := mcpserver.NewTestServer(t, srv, mcpserver.Config{
+		Name: "test", Version: "1.0.0", DisableRequestLog: true,
+		MCPReceivingMiddleware: []mcp.Middleware{record},
+	})
+
+	c := mcpclient.New(ts.URL)
+	defer c.Close() //nolint:errcheck
+	got, err := c.CallText(context.Background(), "echo", map[string]any{"msg": "hi"})
+	if err != nil || got != "hi" {
+		t.Fatalf("CallText = %q, %v; want \"hi\", nil", got, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var discover, initialize bool
+	for _, m := range methods {
+		discover = discover || m == "server/discover"
+		initialize = initialize || m == "initialize"
+	}
+	if !discover || initialize {
+		t.Fatalf("server saw methods %v; want server/discover and no initialize (2026-07-28 negotiation)", methods)
+	}
 }

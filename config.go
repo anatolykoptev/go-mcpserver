@@ -114,6 +114,15 @@ type Config struct {
 	// reverse proxy on localhost that you control.
 	DisableLocalhostProtection bool
 
+	// SupportedProtocolVersions restricts the MCP protocol versions the server
+	// advertises and negotiates (e.g. {"2025-11-25"} to opt out of 2026-07-28
+	// without a code revert). nil/empty = every version the SDK supports. The
+	// list can only narrow, never widen; a version the SDK does not implement
+	// makes NewServer panic at startup (go-sdk behaviour). Applied only at
+	// server creation by NewServer/Serve; a value set on a Config passed to
+	// Run/Build is ignored (see the startup warning).
+	SupportedProtocolVersions []string
+
 	// KeepAlive sets the interval for periodic ping requests. If the peer
 	// fails to respond, the session is automatically closed. 0 = disabled.
 	// Recommended for stateful mode: 30s. Applied only at server creation by
@@ -193,6 +202,7 @@ func withDefaults(cfg Config) Config {
 func (c Config) withoutServerOpts() Config {
 	c.KeepAlive = 0
 	c.SchemaCache = nil
+	c.SupportedProtocolVersions = nil
 	return c
 }
 
@@ -200,8 +210,8 @@ func (c Config) withoutServerOpts() Config {
 // Config passed to Run/Build, since those options are only honoured by
 // NewServer/Serve.
 func warnIgnoredServerOpts(cfg Config, logger *slog.Logger) {
-	if cfg.KeepAlive != 0 || cfg.SchemaCache != nil {
-		logger.Warn("mcpserver: Config.KeepAlive/SchemaCache set on Run/Build are ignored — server options apply only via NewServer/Serve; set them there or remove them from the Run/Build Config")
+	if cfg.KeepAlive != 0 || cfg.SchemaCache != nil || len(cfg.SupportedProtocolVersions) > 0 {
+		logger.Warn("mcpserver: Config.KeepAlive/SchemaCache/SupportedProtocolVersions set on Run/Build are ignored — server options apply only via NewServer/Serve; set them there or remove them from the Run/Build Config")
 	}
 }
 

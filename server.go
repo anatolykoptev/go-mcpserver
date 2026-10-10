@@ -39,5 +39,8 @@ func buildServerOptions(cfg Config) *mcp.ServerOptions {
 	if cfg.SchemaCache != nil {
 		opts.SchemaCache = cfg.SchemaCache
 	}
+	if len(cfg.SupportedProtocolVersions) > 0 {
+		opts.SupportedProtocolVersions = cfg.SupportedProtocolVersions
+	}
 	return opts
 }
