@@ -210,6 +210,7 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 			SessionTimeout:             cfg.SessionTimeout,
 			EventStore:                 cfg.EventStore,
 			JSONResponse:               cfg.JSONResponse,
+			MaxRequestBodyBytes:        cfg.MaxRequestBodyBytes,
 			Logger:                     cfg.MCPLogger,
 			DisableLocalhostProtection: cfg.DisableLocalhostProtection,
 		})

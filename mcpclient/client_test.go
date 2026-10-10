@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -319,4 +321,120 @@ func TestFireBoundedConcurrency(t *testing.T) {
 
 	// Wait for the 3 goroutines to finish so we don't leak them into other tests.
 	time.Sleep(3 * time.Second)
+}
+
+// T6: mcpclient negotiates protocol 2026-07-28 (server/discover, no legacy
+// initialize) against a default go-mcpserver and can call a tool.
+func TestCall_Negotiates_2026_07_28(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0"}, nil)
+	type echoArgs struct {
+		Msg string `json:"msg"`
+	}
+	mcpserver.AddTool(srv, &mcp.Tool{Name: "echo", Description: "returns msg"},
+		func(_ context.Context, _ *mcp.CallToolRequest, a echoArgs) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: a.Msg}}}, nil
+		})
+
+	var mu sync.Mutex
+	var methods []string
+	record := func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			mu.Lock()
+			methods = append(methods, method)
+			mu.Unlock()
+			return next(ctx, method, req)
+		}
+	}
+	ts := mcpserver.NewTestServer(t, srv, mcpserver.Config{
+		Name: "test", Version: "1.0.0", DisableRequestLog: true,
+		MCPReceivingMiddleware: []mcp.Middleware{record},
+	})
+
+	c := mcpclient.New(ts.URL)
+	defer c.Close() //nolint:errcheck
+	got, err := c.CallText(context.Background(), "echo", map[string]any{"msg": "hi"})
+	if err != nil || got != "hi" {
+		t.Fatalf("CallText = %q, %v; want \"hi\", nil", got, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var discover, initialize bool
+	for _, m := range methods {
+		discover = discover || m == "server/discover"
+		initialize = initialize || m == "initialize"
+	}
+	if !discover || initialize {
+		t.Fatalf("server saw methods %v; want server/discover and no initialize (2026-07-28 negotiation)", methods)
+	}
+}
+
+// newCappedServer returns an echo server whose POST /mcp body cap is cap bytes.
+func newCappedServer(t *testing.T, limit int64) *httptest.Server {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0"}, nil)
+	type echoArgs struct {
+		Msg string `json:"msg"`
+	}
+	mcpserver.AddTool(srv, &mcp.Tool{Name: "echo", Description: "returns msg"},
+		func(_ context.Context, _ *mcp.CallToolRequest, a echoArgs) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: a.Msg}}}, nil
+		})
+	return mcpserver.NewTestServer(t, srv, mcpserver.Config{
+		Name: "test", Version: "1.0.0", DisableRequestLog: true, MaxRequestBodyBytes: limit,
+	})
+}
+
+// A 413 (body over the server cap) is a request that can never succeed: it
+// must surface as ErrRejected even with WithUnreachableTolerant(true), never
+// as a silent ("", nil).
+func TestCall_BodyTooLarge_SurfacesWithTolerantMode(t *testing.T) {
+	ts := newCappedServer(t, 1024)
+	for _, tolerant := range []bool{true, false} {
+		c := mcpclient.New(ts.URL, mcpclient.WithUnreachableTolerant(tolerant))
+		got, err := c.CallText(context.Background(), "echo", map[string]any{"msg": strings.Repeat("a", 8192)})
+		if err == nil {
+			t.Fatalf("tolerant=%v: CallText over the body cap = %q, nil; want an error", tolerant, got)
+		}
+		if !errors.Is(err, mcpclient.ErrRejected) || errors.Is(err, mcpclient.ErrUnreachable) {
+			t.Errorf("tolerant=%v: err = %v; want ErrRejected and not ErrUnreachable", tolerant, err)
+		}
+		// The client recovers: a small call on the same Client still works.
+		if got, err := c.CallText(context.Background(), "echo", map[string]any{"msg": "ok"}); err != nil || got != "ok" {
+			t.Errorf("tolerant=%v: follow-up call = %q, %v; want ok, nil", tolerant, got, err)
+		}
+		_ = c.Close()
+	}
+}
+
+// A JSON-RPC error response (unknown tool) is also a real error in tolerant mode.
+func TestCall_JSONRPCError_SurfacesWithTolerantMode(t *testing.T) {
+	ts := newCappedServer(t, 0)
+	c := mcpclient.New(ts.URL, mcpclient.WithUnreachableTolerant(true))
+	defer c.Close() //nolint:errcheck
+	_, err := c.CallText(context.Background(), "no_such_tool", map[string]any{})
+	if err == nil || !errors.Is(err, mcpclient.ErrRejected) {
+		t.Fatalf("err = %v; want ErrRejected", err)
+	}
+}
+
+// 5xx stays "unreachable": tolerant mode swallows it, strict mode wraps ErrUnreachable.
+func TestCall_ServerError5xx_StaysUnreachable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	tol := mcpclient.New(ts.URL, mcpclient.WithUnreachableTolerant(true))
+	defer tol.Close() //nolint:errcheck
+	if got, err := tol.CallText(context.Background(), "echo", nil); err != nil || got != "" {
+		t.Errorf("tolerant 503: got %q, %v; want \"\", nil", got, err)
+	}
+
+	strict := mcpclient.New(ts.URL)
+	defer strict.Close() //nolint:errcheck
+	_, err := strict.CallText(context.Background(), "echo", nil)
+	if !errors.Is(err, mcpclient.ErrUnreachable) || errors.Is(err, mcpclient.ErrRejected) {
+		t.Errorf("strict 503: err = %v; want ErrUnreachable and not ErrRejected", err)
+	}
 }
