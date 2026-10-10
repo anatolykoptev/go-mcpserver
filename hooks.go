@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -127,6 +128,9 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+			// Cancel the tool when the HTTP client has gone away (see
+			// trackClientDisconnect); a no-op when the request is untracked.
+			defer cancelOnClientGone(req, cancel)()
 
 			// Keep the response stream warm while the tool runs so long calls
 			// aren't abandoned by clients/proxies before the result is ready.
@@ -165,7 +169,7 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 				return &mcp.CallToolResult{
 					IsError: true,
 					Content: []mcp.Content{&mcp.TextContent{
-						Text: fmt.Sprintf("tool %q timed out after %s", params.Name, timeout),
+						Text: abortText(ctx, params.Name, timeout),
 					}},
 				}, nil
 			}
@@ -225,6 +229,27 @@ func startToolKeepalive(ctx context.Context, req mcp.Request, toolName string, i
 		}
 	}()
 	return func() { close(done) }
+}
+
+// cancelOnClientGone arranges for cancel to run when the HTTP client behind req
+// disconnects (see trackClientDisconnect). The returned func releases the
+// registration; both are no-ops for untracked requests.
+func cancelOnClientGone(req mcp.Request, cancel context.CancelFunc) (stop func()) {
+	cc := clientRequestCtx(req)
+	if cc == nil {
+		return func() {}
+	}
+	stopAfter := context.AfterFunc(cc, cancel)
+	return func() { stopAfter() }
+}
+
+// abortText is the tool result text when ctx ended before the tool returned:
+// a client disconnect (context.Canceled) or the tool timeout.
+func abortText(ctx context.Context, tool string, timeout time.Duration) string {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Sprintf("tool %q cancelled: client disconnected", tool)
+	}
+	return fmt.Sprintf("tool %q timed out after %s", tool, timeout)
 }
 
 func resolveTimeout(name string, args json.RawMessage, cfg Config) time.Duration {

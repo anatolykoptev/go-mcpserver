@@ -86,6 +86,7 @@ type Config struct {
 	SupportedProtocolVersions []string         // nil = all SDK versions; {"2025-11-25"} opts out of 2026-07-28; use NewServer to apply
 	DisableLocalhostProtection bool            // DNS rebinding protection; set true ONLY behind trusted reverse proxy
 	MaxRequestBodyBytes       int64            // POST /mcp body cap; 0 = 16 MiB, <0 = unlimited (applies in Run/Build/Serve)
+	CancelOnClientDisconnect  *bool            // nil = true: cancel the tool ctx when the client aborts the POST (stateless only); *false = old behaviour
 
 	Context    context.Context // nil → internal signal.NotifyContext(SIGINT, SIGTERM)
 	Logger     *slog.Logger    // nil → auto
@@ -180,6 +181,22 @@ mcpserver.Run(server, mcpserver.Config{
     Version: "1.0.0",
 })
 ```
+
+## Cancelling tools when the client disconnects
+
+By default (stateless mode) a tool handler's `ctx` is cancelled as soon as the
+client aborts its POST (disconnect or cancel), instead of running until
+`ToolTimeout`. A caller that is gone cannot receive the result, so long tools
+(browser automation, research, LLM calls) stop burning CPU and money. It works
+for 2026-07-28 requests via go-sdk's `PropagateRequestCancellation` and for
+2025-11-25 and older requests via a go-mcpserver wrapper. The tool-timeout
+middleware and the keepalive goroutine exit with the context.
+
+Set `CancelOnClientDisconnect: new(bool)` to keep the old behaviour. **Trade-off:**
+a tool with side effects that is cancelled midway must already be idempotent or
+transactional - `ToolTimeout` can cut it at any point in exactly the same way.
+Stateful mode (`Stateless=false`) is unchanged: a session may resume a dropped
+stream.
 
 ## Reverse proxy on localhost
 

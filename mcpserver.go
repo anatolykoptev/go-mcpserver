@@ -206,14 +206,21 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 		var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
 		}, &mcp.StreamableHTTPOptions{
-			Stateless:                  stateless,
-			SessionTimeout:             cfg.SessionTimeout,
-			EventStore:                 cfg.EventStore,
-			JSONResponse:               cfg.JSONResponse,
-			MaxRequestBodyBytes:        cfg.MaxRequestBodyBytes,
-			Logger:                     cfg.MCPLogger,
-			DisableLocalhostProtection: cfg.DisableLocalhostProtection,
+			Stateless:                    stateless,
+			SessionTimeout:               cfg.SessionTimeout,
+			EventStore:                   cfg.EventStore,
+			JSONResponse:                 cfg.JSONResponse,
+			MaxRequestBodyBytes:          cfg.MaxRequestBodyBytes,
+			PropagateRequestCancellation: cancelOnDisconnect(cfg),
+			Logger:                       cfg.MCPLogger,
+			DisableLocalhostProtection:   cfg.DisableLocalhostProtection,
 		})
+
+		// Only stateless handlers: a stateful session may resume a dropped
+		// POST stream, so an aborted POST there is not necessarily abandoned.
+		if stateless && cancelOnDisconnect(cfg) {
+			mcpHandler = trackClientDisconnect(mcpHandler)
+		}
 
 		if cfg.BearerAuth != nil {
 			mcpHandler = applyBearerAuth(mcpHandler, cfg.BearerAuth)
@@ -392,4 +399,10 @@ func buildCtx(cfg Config) context.Context {
 		return cfg.Context
 	}
 	return context.Background()
+}
+
+// cancelOnDisconnect reports whether tool handlers should be cancelled when
+// the client aborts the request (Config.CancelOnClientDisconnect, default true).
+func cancelOnDisconnect(cfg Config) bool {
+	return cfg.CancelOnClientDisconnect == nil || *cfg.CancelOnClientDisconnect
 }

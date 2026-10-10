@@ -119,6 +119,19 @@ type Config struct {
 	// reverse proxy on localhost that you control.
 	DisableLocalhostProtection bool
 
+	// CancelOnClientDisconnect makes the tool handler's context cancel when the
+	// client aborts the POST (disconnect or cancel), so a tool whose caller is
+	// gone stops instead of running to ToolTimeout. nil = true; set to a pointer
+	// to false for the old behaviour. Applies to stateless handlers only (the
+	// default): go-sdk's StreamableHTTPOptions.PropagateRequestCancellation
+	// covers 2026-07-28 requests, and a go-mcpserver wrapper covers
+	// 2025-11-25 and older ones. Stateful mode is unchanged - a session may
+	// resume a dropped POST stream.
+	//
+	// Trade-off: a tool cancelled midway must already be idempotent or
+	// transactional - ToolTimeout can cut it at any point in the same way.
+	CancelOnClientDisconnect *bool
+
 	// MaxRequestBodyBytes caps the size of a single POST /mcp request body;
 	// larger requests are rejected with 413 Request Entity Too Large. 0 = 16 MiB
 	// (go-mcpserver default; go-sdk v1.8.0 itself defaults to 4 MiB and v1.6.1
