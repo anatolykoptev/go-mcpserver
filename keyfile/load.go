@@ -282,3 +282,7 @@ func dedupe(in []string) []string {
 }
 
 const kindTooLarge = "file too large"
+
+// kindParentWritable is the refusal of a group- or world-writable parent
+// directory. It is not recorded against the file signature; see attempt.
+const kindParentWritable = "parent directory is group- or world-writable"

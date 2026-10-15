@@ -239,3 +239,76 @@ func TestKeyfile_SignatureCapturesInodeAndCtime(t *testing.T) {
 		t.Errorf("new key rejected after replacement: %v", err)
 	}
 }
+
+// A persistent refusal records the real file signature: the file is not
+// re-read (and the log not re-written) every stat TTL, but a chmod that fixes
+// the file (ctime change, same inode/mtime/size) is picked up at once.
+func TestKeyfile_PersistentRefusalIsNotReReadEveryTTL(t *testing.T) {
+	tok, sha := mustMint(t)
+	path := filepath.Join(privateDir(t), "keys.yaml")
+	writeAtomic(t, path, fileOf(entry("alice", sha, "2099-01-01T00:00:00Z", "ro_health")))
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	logger, buf := debugLogger()
+	s, err := Open(baseOpts(path, logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.sleep = func(time.Duration) {}
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	reads := 0
+	base := s.readFile
+	s.readFile = func(p string) ([]byte, error) { reads++; return base(p) }
+
+	before := s.reloads.Load()
+	for range 5 {
+		clock = clock.Add(2 * defaultStatTTL)
+		if _, err := verify(s, tok); !errors.Is(err, auth.ErrInvalidToken) {
+			t.Fatalf("writable file must deny all, got %v", err)
+		}
+		waitIdle(t, s)
+	}
+	if got := s.reloads.Load() - before; got != 0 {
+		t.Errorf("reload cycles over 5 TTLs of a persistent refusal = %d, want 0", got)
+	}
+	if reads != 0 {
+		t.Errorf("file re-read %d times over 5 TTLs of a persistent refusal, want 0", reads)
+	}
+	if n := strings.Count(buf.String(), "retrying once"); n > 1 {
+		t.Errorf("\"retrying once\" logged %d times, want at most 1", n)
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil { // ctime-only change
+		t.Fatal(err)
+	}
+	clock = clock.Add(2 * defaultStatTTL)
+	if _, err := verify(s, tok); err != nil {
+		t.Fatalf("chmod fix must be picked up: %v", err)
+	}
+}
+
+// A group-writable parent is not visible in the file's own signature, so that
+// refusal stays re-checkable: fixing the directory must be picked up.
+func TestKeyfile_ParentRefusalRecoversAfterDirectoryFix(t *testing.T) {
+	tok, sha := mustMint(t)
+	dir := privateDir(t)
+	path := filepath.Join(dir, "keys.yaml")
+	writeAtomic(t, path, fileOf(entry("alice", sha, "2099-01-01T00:00:00Z", "ro_health")))
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := openAt(t, path)
+	s.sleep = func(time.Duration) {}
+	if _, err := verify(s, tok); !errors.Is(err, auth.ErrInvalidToken) {
+		t.Fatalf("group-writable parent must deny all, got %v", err)
+	}
+	waitIdle(t, s)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verify(s, tok); err != nil {
+		t.Fatalf("fixing the parent directory must be picked up: %v", err)
+	}
+}

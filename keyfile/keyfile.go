@@ -64,7 +64,8 @@ type Options struct {
 	// default privileges.
 	ValidateAttrs func(name string, attrs map[string]string) error
 	// AllowNonToolMethods disables the default-deny of MCP methods other than
-	// initialize, ping, notifications/* and tools/* (resources/*, prompts/*,
+	// initialize, ping, server/discover, notifications/*, tools/list and
+	// tools/call (resources/*, prompts/*,
 	// completion/complete, logging/setLevel, ...) in [Store.Middleware]. The
 	// key file scopes tools only, so leave this off unless every resource and
 	// prompt on the server is safe for every key.
@@ -106,10 +107,11 @@ type Store struct {
 	reloading  atomic.Bool
 	lastStatNS atomic.Int64
 
-	rejects      [reasonCount]atomic.Uint64
-	lastWarn     [reasonCount]atomic.Int64
-	lastIOWarn   atomic.Int64
-	lastLoadWarn atomic.Int64
+	rejects       [reasonCount]atomic.Uint64
+	lastWarn      [reasonCount]atomic.Int64
+	lastIOWarn    atomic.Int64
+	lastLoadWarn  atomic.Int64
+	lastRetryWarn atomic.Int64
 
 	// test seams
 	statTTL  time.Duration
@@ -299,8 +301,8 @@ func (s *Store) ToolFilter() func(context.Context, string, *mcpserver.TokenInfo)
 type ctxKey struct{}
 
 // Middleware returns MCP receiving middleware that (1) denies MCP methods other
-// than initialize, ping, notifications/* and tools/* unless
-// Options.AllowNonToolMethods is set, and (2) stores each request's own
+// than initialize, ping, server/discover, notifications/*, tools/list and
+// tools/call unless Options.AllowNonToolMethods is set, and (2) stores each request's own
 // verified TokenInfo in the context for [Attrs]. [Store.Install] adds it.
 //
 // The key file scopes tools only, and the tool filter never sees resources or
@@ -321,10 +323,15 @@ func (s *Store) Middleware() mcp.Middleware {
 }
 
 // scopedMethod reports whether method is handled by the tool filter or carries
-// no key-scoped data.
+// no key-scoped data. tools/* is matched exactly (list and call): a future
+// tools/* method is default-denied until it is reviewed. server/discover is
+// sent by clients before initialize and returns server info only.
 func scopedMethod(method string) bool {
-	return method == "initialize" || method == "ping" ||
-		strings.HasPrefix(method, "notifications/") || strings.HasPrefix(method, "tools/")
+	switch method {
+	case "initialize", "ping", "server/discover", "tools/list", "tools/call":
+		return true
+	}
+	return strings.HasPrefix(method, "notifications/")
 }
 
 // AttrsOf returns a copy of the attrs snapshotted when info was verified, or nil

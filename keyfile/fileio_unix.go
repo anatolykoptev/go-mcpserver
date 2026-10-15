@@ -55,7 +55,7 @@ func checkParent(path string) (string, error) {
 		return "", err
 	}
 	if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&os.ModeSticky == 0 {
-		return "parent directory is group- or world-writable", nil
+		return kindParentWritable, nil
 	}
 	return "", nil
 }

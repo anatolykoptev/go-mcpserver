@@ -435,3 +435,78 @@ func TestKeyfile_FileSizeCapPinned(t *testing.T) {
 		t.Errorf("parse must refuse oversized input, got %v", err)
 	}
 }
+
+// --- follow-ups from #49 ------------------------------------------------------------------
+
+// middlewareAllows reports whether the middleware lets method through to next.
+func middlewareAllows(t *testing.T, s *Store, method string) bool {
+	t.Helper()
+	called := false
+	next := func(context.Context, string, mcp.Request) (mcp.Result, error) {
+		called = true
+		return nil, nil
+	}
+	_, _ = s.Middleware()(next)(context.Background(), method, &mcp.ServerRequest[*mcp.PingParams]{})
+	return called
+}
+
+func TestKeyfile_ScopedMethodAllowlist(t *testing.T) {
+	s, _, _ := openStore(t, emptyFile)
+	for _, m := range []string{
+		"initialize", "ping", "server/discover", "tools/list", "tools/call",
+		"notifications/initialized", "notifications/cancelled",
+	} {
+		if !middlewareAllows(t, s, m) {
+			t.Errorf("%s must pass for a scoped key", m)
+		}
+	}
+	for _, m := range []string{
+		"tools/foo", "tools/", "tools/list/extra", "tools", "server/other", "server/",
+		"resources/read", "prompts/get", "completion/complete", "logging/setLevel", "",
+	} {
+		if middlewareAllows(t, s, m) {
+			t.Errorf("%q must be default-denied for a scoped key", m)
+		}
+	}
+}
+
+func TestKeyfile_ServerDiscoverOptOutStillAllowsEverything(t *testing.T) {
+	s, _, _ := openWith(t, emptyFile, func(o *Options) { o.AllowNonToolMethods = true })
+	if !middlewareAllows(t, s, "tools/foo") {
+		t.Error("AllowNonToolMethods must let every method through")
+	}
+}
+
+// A backward wall-clock step must not freeze the reload gate: the revoked key
+// has to stop authenticating on the next verification after the file changed.
+func TestKeyfile_BackwardClockStepDoesNotFreezeReload(t *testing.T) {
+	tok, sha := mustMint(t)
+	s, path, _ := openStore(t, fileOf(entry("alice", sha, "2099-01-01T00:00:00Z", "ro_health")))
+	s.statTTL = time.Second
+	base := time.Now()
+	s.now = func() time.Time { return base }
+	if _, err := verify(s, tok); err != nil {
+		t.Fatal(err)
+	}
+	// Step the clock back an hour, then revoke the key.
+	s.now = func() time.Time { return base.Add(-time.Hour) }
+	writeAtomic(t, path, emptyFile)
+	if _, err := verify(s, tok); !errors.Is(err, auth.ErrInvalidToken) {
+		t.Fatalf("revoked key must stop authenticating after a backward clock step, got %v", err)
+	}
+}
+
+// The reject/warn rate limiter shares the same clock hazard.
+func TestKeyfile_BackwardClockStepDoesNotSilenceWarnings(t *testing.T) {
+	s, _, _ := openStore(t, emptyFile)
+	base := time.Now()
+	var last atomic.Int64
+	s.now = func() time.Time { return base }
+	if !s.warnDue(&last) {
+		t.Fatal("first warning must be due")
+	}
+	s.now = func() time.Time { return base.Add(-time.Hour) }
+	if !s.warnDue(&last) {
+		t.Error("a backward clock step must not suppress warnings until the clock catches up")
+	}
+}

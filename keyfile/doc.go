@@ -47,10 +47,33 @@
 // world-writable unless it has the sticky bit. Anything else is deny-all with
 // an ERROR (unix only; elsewhere only the regular-file check applies).
 //
+// These checks have deployment consequences:
+//
+//   - Only the final path component is checked for a symlink, and a symlink
+//     there is refused rather than followed. A key file mounted as a symlink
+//     (Kubernetes Secret and ConfigMap volumes, Nix store links such as those
+//     managed by sops-nix) is therefore refused. Point Path at a regular file,
+//     for example a copy written by an init step.
+//   - The owner must be root or the running user. A process running as root
+//     inside a container passes the check for a root-owned file, but a file
+//     that is bind-mounted from the host and owned by another host UID is
+//     refused, because that UID is neither root nor the container's user.
+//     Chown the file on the host, or run the process as the file's owner.
+//   - The parent directory must not be group- or world-writable (sticky
+//     excepted). A directory created as 0775 under a umask of 002 is refused;
+//     chmod it to 0755 or 0700.
+//
+// A refusal keeps the file in deny-all and is logged at ERROR once per file
+// version. The file is not re-read until its inode, mtime, ctime or size
+// changes, so a chmod or chown of the file takes effect on the next stat. A
+// refused parent directory is the exception: it is re-checked on every stat so
+// that fixing the directory is picked up without touching the file.
+//
 // # Reload
 //
-// Each verification stats the file (at most once per second) and re-reads it
-// when its inode, mtime, ctime or size changed. A failed read or parse keeps
+// Each verification stats the file (at most once per second; a backward step of
+// the wall clock does not delay the next stat) and re-reads it when its inode,
+// mtime, ctime or size changed. A failed read or parse keeps
 // the previous key set for one 50 ms retry window, then installs deny-all
 // until the file next changes. There is deliberately no keep-last-good: a typo
 // in an edit that revokes a key must not leave that key alive. Reloads are
@@ -72,9 +95,10 @@
 // TokenInfo is denied.
 //
 // [Store.Middleware] (added by Install) also denies every MCP method other than
-// initialize, ping, notifications/* and tools/* (resources, prompts,
-// completion, ...), because the key file scopes tools only. Options.
-// AllowNonToolMethods turns that off.
+// initialize, ping, server/discover, notifications/*, tools/list and
+// tools/call (resources, prompts, completion, any other tools/* method, ...),
+// because the key file scopes tools only. Options.AllowNonToolMethods turns
+// that off.
 //
 // Tool handlers read the verified attrs with [Attrs](ctx) or, equivalently,
 // [AttrsOf](req.Extra.TokenInfo). Both give the current request's identity.
