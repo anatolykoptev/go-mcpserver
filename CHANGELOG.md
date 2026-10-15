@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/anatolykoptev/go-mcpserver/compare/v0.22.0...v0.22.1) (2026-10-15)
+
+
+### Fixed
+
+* **keyfile:** scoped-method allowlist, clock-step-safe reload gate, refusal signatures, deploy docs ([#50](https://github.com/anatolykoptev/go-mcpserver/issues/50)) ([7888171](https://github.com/anatolykoptev/go-mcpserver/commit/78881712a5fee5d8b0c3f05e4ade1f4e287ac4cf)), closes [#49](https://github.com/anatolykoptev/go-mcpserver/issues/49)
+
 ## [0.22.0](https://github.com/anatolykoptev/go-mcpserver/compare/v0.21.0...v0.22.0) (2026-10-15)
 
 
