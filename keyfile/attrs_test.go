@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,7 @@ import (
 
 func openWith(t *testing.T, content string, mut func(*Options)) (*Store, string, *syncBuf) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "keys.yaml")
+	path := filepath.Join(privateDir(t), "keys.yaml")
 	writeAtomic(t, path, content)
 	logger, buf := debugLogger()
 	o := baseOpts(path, logger)
@@ -84,8 +83,10 @@ func TestKeyfile_AttrsOptionalDefaultsEmpty(t *testing.T) {
 	}
 }
 
-func TestKeyfile_AttrsInvalidShapeDeniesAll(t *testing.T) {
+// A malformed attrs map invalidates that entry only.
+func TestKeyfile_AttrsInvalidShapeDropsEntry(t *testing.T) {
 	tok, sha := mustMint(t)
+	goodTok, goodSha := mustMint(t)
 	many := strings.Builder{}
 	for i := range 33 {
 		fmt.Fprintf(&many, "      k%d: v\n", i)
@@ -99,14 +100,19 @@ func TestKeyfile_AttrsInvalidShapeDeniesAll(t *testing.T) {
 		"too many attrs": many.String(),
 		"nested map":     "      role:\n        nested: x\n",
 		"list value":     "      role: [a, b]\n",
+		"integer value":  "      role: 5\n",
+		"bool value":     "      role: true\n",
 	}
 	for name, attrs := range cases {
-		s, _, _ := openStore(t, fileOf(entryAttrs("alice", sha, attrs, "ro_health")))
+		s, _, _ := openStore(t, fileOf(
+			entryAttrs("alice", sha, attrs, "ro_health"),
+			entry("bob", goodSha, futureExpiry(), "ro_health"),
+		))
 		if _, err := verify(s, tok); !errors.Is(err, auth.ErrInvalidToken) {
-			t.Errorf("%s: whole file must be invalid (deny-all), key accepted (err=%v)", name, err)
+			t.Errorf("%s: entry with a bad attrs shape must be dropped, key accepted (err=%v)", name, err)
 		}
-		if st := s.Status(); st.LastReloadOK {
-			t.Errorf("%s: LastReloadOK must be false", name)
+		if _, err := verify(s, goodTok); err != nil {
+			t.Errorf("%s: sibling entry must survive: %v", name, err)
 		}
 	}
 	// boundaries are accepted
@@ -163,7 +169,7 @@ func TestKeyfile_ValidatorDropsOnlyThatEntry(t *testing.T) {
 	}
 	// runs again on every reload
 	before := calls.Load()
-	writeAtomic(t, path, content+"# touched\n")
+	writeAtomic(t, path, "# touched\n"+content)
 	if _, err := verify(s, goodTok); err != nil {
 		t.Fatal(err)
 	}
@@ -209,5 +215,3 @@ func TestKeyfile_AttrsSnapshotImmuneToStoreChanges(t *testing.T) {
 		t.Fatalf("AttrsOf returned a shared map: role = %q", got)
 	}
 }
-
-var _ = slog.LevelInfo

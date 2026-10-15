@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -74,6 +75,8 @@ func TestOpen_InvalidOptions(t *testing.T) {
 		"empty reserved":  func(o *Options) { o.ReservedPrefixes = []string{""} },
 		"upper reserved":  func(o *Options) { o.ReservedPrefixes = []string{"Env-"} },
 		"duplicate tools": func(o *Options) { o.Tools = []string{"a", "a"} },
+		"nil tools":       func(o *Options) { o.Tools = nil },
+		"empty tools":     func(o *Options) { o.Tools = []string{} },
 	}
 	for name, mut := range cases {
 		o := good
@@ -220,18 +223,25 @@ func TestKeyfile_TokenInfoShape(t *testing.T) {
 
 func TestKeyfile_StrictDecode(t *testing.T) {
 	good, goodSha := mustMint(t)
-	_, dupSha := mustMint(t)
-	exp := futureExpiry()
-	e := entry("alice", goodSha, exp, "ro_health")
+	e := entry("alice", goodSha, futureExpiry(), "ro_health")
+	const end = "end: true\n"
 	cases := map[string]string{
-		"unknown top-level field": "version: 1\nunknown: 1\nkeys:\n" + e,
-		"unknown entry field":     "version: 1\nkeys:\n" + e + "    extra: yes\n",
-		"version 2":               "version: 2\nkeys:\n" + e,
-		"missing version":         "keys:\n" + e,
-		"duplicate name":          fileOf(e, entry("alice", dupSha, exp, "ro_health")),
-		"syntax error":            "version: 1\nkeys: [\n" + e,
+		"unknown top-level field": "version: 1\nunknown: 1\nkeys:\n" + e + end,
+		"unknown entry field":     "version: 1\nkeys:\n" + e + "    extra: yes\n" + end,
+		"version 2":               "version: 2\nkeys:\n" + e + end,
+		"version 1.0":             "version: 1.0\nkeys:\n" + e + end,
+		"version 1.9":             "version: 1.9\nkeys:\n" + e + end,
+		"version 0x1":             "version: 0x1\nkeys:\n" + e + end,
+		"version 01":              "version: 01\nkeys:\n" + e + end,
+		"version string":          "version: \"1\"\nkeys:\n" + e + end,
+		"missing version":         "keys:\n" + e + end,
+		"syntax error":            "version: 1\nkeys: [\n" + e + end,
 		"empty file":              "\n",
-		"second document":         fileOf(e) + "---\nversion: 1\nkeys: []\n",
+		"second document":         fileOf(e) + "---\nversion: 1\nkeys: []\nend: true\n",
+		"no end marker":           "version: 1\nkeys:\n" + e,
+		"end false":               "version: 1\nkeys:\n" + e + "end: false\n",
+		"end not last":            "version: 1\nend: true\nkeys:\n" + e,
+		"end with trailing text":  "version: 1\nkeys:\n" + e + "end: true # x\n",
 	}
 	for name, content := range cases {
 		s, _, _ := openStore(t, content)
@@ -241,6 +251,12 @@ func TestKeyfile_StrictDecode(t *testing.T) {
 		if st := s.Status(); st.LastReloadOK || st.Keys != 0 {
 			t.Errorf("%s: Status = %+v, want LastReloadOK=false Keys=0", name, st)
 		}
+	}
+	// The same entry in a well-formed file is accepted (the cases above fail
+	// only because of their defect).
+	s, _, _ := openStore(t, fileOf(e))
+	if _, err := verify(s, good); err != nil {
+		t.Fatalf("control file rejected: %v", err)
 	}
 }
 
@@ -368,7 +384,7 @@ func TestKeyfile_ReloadTriggeredBySizeAndMtimeNotJustInode(t *testing.T) {
 		t.Fatal(err)
 	}
 	// In-place truncate to an empty-keys file: same inode, different size.
-	if err := os.WriteFile(path, []byte("version: 1\nkeys: []\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(emptyFile), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := verify(s, aTok); !errors.Is(err, auth.ErrInvalidToken) {
@@ -383,7 +399,7 @@ func TestKeyfile_StatCachedWithinTTL(t *testing.T) {
 	if _, err := verify(s, aTok); err != nil { // primes the stat timestamp
 		t.Fatal(err)
 	}
-	writeAtomic(t, path, "version: 1\nkeys: []\n")
+	writeAtomic(t, path, emptyFile)
 	if _, err := verify(s, aTok); err != nil {
 		t.Fatalf("within the stat TTL the file must not be re-stat'ed: %v", err)
 	}
@@ -395,9 +411,9 @@ func TestKeyfile_ParseErrorDeniesAll(t *testing.T) {
 	if _, err := verify(s, aTok); err != nil {
 		t.Fatal(err)
 	}
-	writeAtomic(t, path, "version: 1\nkeys: [[[\n")
+	writeAtomic(t, path, "version: 1\nkeys: [[[\nend: true\n")
 	_, _ = verify(s, aTok) // triggers the reload; old snapshot may serve during the retry window
-	time.Sleep(retryDelay + 150*time.Millisecond)
+	waitIdle(t, s)
 	if _, err := verify(s, aTok); !errors.Is(err, auth.ErrInvalidToken) {
 		t.Fatalf("a persistent parse error must deny all (no keep-last-good), got %v", err)
 	}
@@ -417,26 +433,28 @@ func TestKeyfile_ParseErrorDeniesAll(t *testing.T) {
 	}
 }
 
-// A torn write (non-atomic editor) is repaired within the 50 ms retry window.
+// A torn write (non-atomic editor) is repaired within the retry window; the
+// previous key set keeps serving until then.
 func TestKeyfile_TornWriteRetry(t *testing.T) {
 	aTok, aSha := mustMint(t)
 	full := fileOf(entry("alice", aSha, futureExpiry(), "ro_health"))
-	s2, path2, _ := openStore(t, full)
-	// valid -> torn -> repaired inside the retry window
-	if _, err := verify(s2, aTok); err != nil {
-		t.Fatal(err)
-	}
-	writeAtomic(t, path2, full[:len(full)-4])
-	_, _ = verify(s2, aTok) // triggers reload; first read fails
-	if _, err := verify(s2, aTok); err != nil {
+	s, path, _ := openStore(t, full)
+	release := gateRetry(t, s)
+
+	writeAtomic(t, path, full[:len(full)-4]) // cut inside the end marker
+	if _, err := verifyWithin(t, s, aTok, 5*time.Second); err != nil {
 		t.Fatalf("the previous key set must keep serving during the retry window: %v", err)
 	}
-	time.AfterFunc(retryDelay/5, func() { writeAtomic(t, path2, full+"# repaired\n") })
-	time.Sleep(retryDelay + 200*time.Millisecond)
-	if _, err := verify(s2, aTok); err != nil {
+	if _, err := verifyWithin(t, s, aTok, 5*time.Second); err != nil {
+		t.Fatalf("still inside the retry window: %v", err)
+	}
+	writeAtomic(t, path, full) // the writer finishes
+	release()
+	waitIdle(t, s)
+	if _, err := verify(s, aTok); err != nil {
 		t.Fatalf("a torn write repaired within the retry window must not lock the key out: %v", err)
 	}
-	if st := s2.Status(); !st.LastReloadOK || st.Keys != 1 {
+	if st := s.Status(); !st.LastReloadOK || st.Keys != 1 {
 		t.Errorf("Status = %+v, want LastReloadOK=true Keys=1", st)
 	}
 }
@@ -445,22 +463,25 @@ func TestKeyfile_TornWriteRetry(t *testing.T) {
 func TestKeyfile_TornWriteRetry_FirstReadTruncated(t *testing.T) {
 	aTok, aSha := mustMint(t)
 	full := fileOf(entry("alice", aSha, futureExpiry(), "ro_health"))
-	s, path, _ := openStore(t, "version: 1\nkeys: []\n")
+	s, path, _ := openStore(t, emptyFile)
+	release := gateRetry(t, s)
 	var mu sync.Mutex
 	reads := 0
+	base := s.readFile
 	s.readFile = func(p string) ([]byte, error) {
+		b, err := base(p)
 		mu.Lock()
 		defer mu.Unlock()
 		reads++
-		b, err := os.ReadFile(p)
 		if reads == 1 && err == nil {
 			return b[:len(b)-4], nil
 		}
 		return b, err
 	}
 	writeAtomic(t, path, full)
-	_, _ = verify(s, aTok) // first read truncated -> retry scheduled
-	time.Sleep(retryDelay + 200*time.Millisecond)
+	_, _ = verifyWithin(t, s, aTok, 5*time.Second) // first read truncated -> retry pending
+	release()
+	waitIdle(t, s)
 	if _, err := verify(s, aTok); err != nil {
 		t.Fatalf("second read is valid, key must be accepted: %v", err)
 	}
@@ -471,41 +492,91 @@ func TestKeyfile_TornWriteRetry_FirstReadTruncated(t *testing.T) {
 	}
 }
 
+// Concurrent verifies during a reload: exactly one reload runs and the others
+// return while it is still blocked reading.
 func TestKeyfile_ReloadSingleFlight(t *testing.T) {
 	aTok, aSha := mustMint(t)
 	full := fileOf(entry("alice", aSha, futureExpiry(), "ro_health"))
 	s, path, _ := openStore(t, full)
-	writeAtomic(t, path, full[:len(full)-4]) // torn
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	base := s.readFile
+	s.readFile = func(p string) ([]byte, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return base(p)
+	}
+	writeAtomic(t, path, "# touched\n"+full)
 	before := s.reloads.Load()
 
 	const n = 50
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	durs := make([]time.Duration, n)
-	errs := make([]error, n)
-	for i := range n {
-		wg.Add(1)
+	done := make(chan error, n)
+	for range n {
 		go func() {
-			defer wg.Done()
-			<-start
-			t0 := time.Now()
-			_, errs[i] = verify(s, aTok)
-			durs[i] = time.Since(t0)
+			_, err := verify(s, aTok)
+			done <- err
 		}()
 	}
-	close(start)
-	wg.Wait()
-	for i := range n {
-		if durs[i] > 40*time.Millisecond {
-			t.Errorf("verify %d blocked for %v during a reload (limit 40ms, retry window is 50ms)", i, durs[i])
-		}
-		if errs[i] != nil {
-			t.Errorf("verify %d: old snapshot must serve during the retry window, got %v", i, errs[i])
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reload started")
+	}
+	for range n - 1 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("old snapshot must serve while the reload is in flight: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("verifies are blocked behind the in-flight reload")
 		}
 	}
-	time.Sleep(retryDelay + 150*time.Millisecond)
+	once.Do(func() { close(release) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("reload winner: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload winner did not finish")
+	}
+	waitIdle(t, s)
 	if got := s.reloads.Load() - before; got != 1 {
 		t.Errorf("reload cycles = %d, want exactly 1", got)
+	}
+}
+
+// End to end with the production-default stat cache.
+func TestKeyfile_ReloadWithDefaultStatTTL(t *testing.T) {
+	aTok, aSha := mustMint(t)
+	path := filepath.Join(privateDir(t), "keys.yaml")
+	writeAtomic(t, path, fileOf(entry("alice", aSha, futureExpiry(), "ro_health")))
+	s, err := Open(baseOpts(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.statTTL != defaultStatTTL {
+		t.Fatalf("statTTL = %v, want the default %v", s.statTTL, defaultStatTTL)
+	}
+	if _, err := verify(s, aTok); err != nil {
+		t.Fatal(err)
+	}
+	writeAtomic(t, path, emptyFile)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := verify(s, aTok); errors.Is(err, auth.ErrInvalidToken) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("revoked key still accepted well after the stat cache interval")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

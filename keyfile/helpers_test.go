@@ -61,8 +61,11 @@ func entry(name, sha, expires string, tools ...string) string {
 	return sb.String()
 }
 
+// emptyFile is a valid key file with no keys.
+const emptyFile = "version: 1\nkeys: []\nend: true\n"
+
 func fileOf(entries ...string) string {
-	return "version: 1\nkeys:\n" + strings.Join(entries, "")
+	return "version: 1\nkeys:\n" + strings.Join(entries, "") + "end: true\n"
 }
 
 // writeAtomic replaces path via write-tmp-then-rename (new inode).
@@ -105,7 +108,7 @@ func debugLogger() (*slog.Logger, *syncBuf) {
 // stat cache disabled so every verify re-checks the file.
 func openStore(t *testing.T, content string) (*Store, string, *syncBuf) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "keys.yaml")
+	path := filepath.Join(privateDir(t), "keys.yaml")
 	if content != "" {
 		writeAtomic(t, path, content)
 	}
@@ -145,13 +148,15 @@ func newTestMCPServer() *mcp.Server {
 	return server
 }
 
-// serve drives the real Install + Build path.
+// serve drives the real Install + Build path. RESTBridge is switched on after
+// Install, because Install refuses a Config that already enables it.
 func serve(t *testing.T, s *Store, rest bool) *httptest.Server {
 	t.Helper()
-	cfg := mcpserver.Config{Name: "kf-test", Version: "0.0.1", DisableRequestLog: true, RESTBridge: rest}
+	cfg := mcpserver.Config{Name: "kf-test", Version: "0.0.1", DisableRequestLog: true}
 	if err := s.Install(&cfg); err != nil {
 		t.Fatal(err)
 	}
+	cfg.RESTBridge = rest
 	return mcpserver.NewTestServer(t, newTestMCPServer(), cfg)
 }
 
@@ -182,4 +187,59 @@ func toolNames(t *testing.T, sess *mcp.ClientSession) []string {
 		names = append(names, tool.Name)
 	}
 	return names
+}
+
+// waitIdle blocks until no reload is in flight.
+func waitIdle(t *testing.T, s *Store) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.reloading.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("reload did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// gateRetry makes the retry window last until release is called.
+func gateRetry(t *testing.T, s *Store) (release func()) {
+	t.Helper()
+	ch := make(chan struct{})
+	s.sleep = func(time.Duration) { <-ch }
+	var once sync.Once
+	release = func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(release)
+	return release
+}
+
+// verifyWithin fails the test if verify does not return within d.
+func verifyWithin(t *testing.T, s *Store, token string, d time.Duration) (*mcpserver.TokenInfo, error) {
+	t.Helper()
+	type res struct {
+		info *mcpserver.TokenInfo
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		info, err := verify(s, token)
+		ch <- res{info, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.info, r.err
+	case <-time.After(d):
+		t.Fatalf("verify did not return within %v (blocked behind a reload?)", d)
+		return nil, nil
+	}
+}
+
+// privateDir is a temp dir only the owner can write to; testing's own TempDir
+// follows the umask and may be group-writable, which the store rightly refuses.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

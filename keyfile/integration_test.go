@@ -113,7 +113,7 @@ func TestKeyfile_RevokeByDeleteHTTP(t *testing.T) {
 	if code := post(t, ts, aTok); code == http.StatusUnauthorized {
 		t.Fatal("valid key got 401")
 	}
-	writeAtomic(t, path, "version: 1\nkeys: []\n")
+	writeAtomic(t, path, emptyFile)
 	if code := post(t, ts, aTok); code != http.StatusUnauthorized {
 		t.Fatalf("revoked key status = %d, want 401", code)
 	}
@@ -224,9 +224,9 @@ func TestKeyfile_NoTokenMaterialInLogs(t *testing.T) {
 	// a bad entry and a torn file produce their own log lines
 	writeAtomic(t, path, fileOf(entry("carol", unknownSha, futureExpiry(), "nope")))
 	_, _ = verify(s, goodTok)
-	writeAtomic(t, path, "version: 1\nkeys: [[[\n")
+	writeAtomic(t, path, "version: 1\nkeys: [[[\nend: true\n")
 	_, _ = verify(s, goodTok)
-	time.Sleep(retryDelay + 150*time.Millisecond)
+	waitIdle(t, s)
 
 	logs := buf.String()
 	if !strings.Contains(logs, "malformed") || !strings.Contains(logs, "unknown") || !strings.Contains(logs, "expired") {

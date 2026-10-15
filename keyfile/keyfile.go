@@ -3,7 +3,6 @@ package keyfile
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,10 +11,12 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	mcpserver "github.com/anatolykoptev/go-mcpserver"
 )
@@ -45,17 +46,29 @@ type Options struct {
 	Path string
 	// Prefix is the token prefix, [a-z]{2,8}; "dzk" yields tokens "dzk1_...".
 	Prefix string
-	// Tools are the tool names registered on the server. A key-file entry that
-	// names any other tool is invalid and dropped.
+	// Tools are the tool names registered on the server (required, non-empty).
+	// A key-file entry that names any other tool is invalid and dropped.
 	Tools []string
 	// ReservedPrefixes are consumer-reserved key-name prefixes (e.g. "env-").
 	// "unknown" and "anonymous" are always reserved.
 	ReservedPrefixes []string
 	// ValidateAttrs, if set, is called for every otherwise-valid entry on every
-	// (re)load with the entry name and a copy of its attrs. A non-nil error drops
-	// only that entry; the error text is logged next to the entry name, so it
-	// must not contain secrets. The library never interprets attrs itself.
+	// (re)load with the entry name and a copy of its attrs. A non-nil error (or
+	// a panic) drops only that entry; the error text is logged next to the entry
+	// name, so it must not contain secrets. The library never interprets attrs
+	// itself.
+	//
+	// An absent attrs map is an empty map, not an error: a consumer that relies
+	// on restrictive attrs (a role, a run-as identity) should REQUIRE them here
+	// and reject entries that omit them, so a forgotten field cannot grant
+	// default privileges.
 	ValidateAttrs func(name string, attrs map[string]string) error
+	// AllowNonToolMethods disables the default-deny of MCP methods other than
+	// initialize, ping, notifications/* and tools/* (resources/*, prompts/*,
+	// completion/complete, logging/setLevel, ...) in [Store.Middleware]. The
+	// key file scopes tools only, so leave this off unless every resource and
+	// prompt on the server is safe for every key.
+	AllowNonToolMethods bool
 	// Logger receives reload and reject diagnostics. Nil = slog.Default().
 	Logger *slog.Logger
 }
@@ -64,6 +77,8 @@ type Options struct {
 type Status struct {
 	// LastReloadOK is false while the store is in deny-all after a failed read.
 	LastReloadOK bool
+	// FileMissing is true when the key file does not exist (an empty, healthy key set).
+	FileMissing bool
 	// Keys is the number of valid entries currently loaded.
 	Keys int
 	// FileSHA256 is the hex SHA-256 of the loaded file content ("" if missing).
@@ -79,25 +94,29 @@ type Rejected struct {
 
 // Store verifies tokens against a key file. Create it with [Open].
 type Store struct {
-	path     string
-	prefix   string
-	tools    map[string]struct{}
-	reserved []string
-	logger   *slog.Logger
-
-	validator func(string, map[string]string) error
+	path         string
+	prefix       string
+	tools        map[string]struct{}
+	reserved     []string
+	logger       *slog.Logger
+	validator    func(string, map[string]string) error
+	allowNonTool bool
 
 	snap       atomic.Pointer[snapshot]
 	reloading  atomic.Bool
 	lastStatNS atomic.Int64
 
-	rejects  [reasonCount]atomic.Uint64
-	lastWarn [reasonCount]atomic.Int64
+	rejects      [reasonCount]atomic.Uint64
+	lastWarn     [reasonCount]atomic.Int64
+	lastIOWarn   atomic.Int64
+	lastLoadWarn atomic.Int64
 
 	// test seams
 	statTTL  time.Duration
 	now      func() time.Time
 	readFile func(string) ([]byte, error)
+	sleep    func(time.Duration)
+	euid     func() int
 	lookups  atomic.Uint64 // hash lookups performed
 	reloads  atomic.Uint64 // reload cycles started
 }
@@ -126,6 +145,9 @@ func Open(o Options) (*Store, error) {
 	if !prefixRE.MatchString(o.Prefix) {
 		return nil, fmt.Errorf("keyfile: Prefix must match %s", prefixRE)
 	}
+	if len(o.Tools) == 0 {
+		return nil, errors.New("keyfile: Tools is required (the registered tool names)")
+	}
 	tools := make(map[string]struct{}, len(o.Tools))
 	for _, t := range o.Tools {
 		if t == "" || t == "*" {
@@ -146,16 +168,19 @@ func Open(o Options) (*Store, error) {
 		logger = slog.Default()
 	}
 	s := &Store{
-		path:      o.Path,
-		prefix:    o.Prefix,
-		tools:     tools,
-		reserved:  slices.Clone(o.ReservedPrefixes),
-		logger:    logger,
-		validator: o.ValidateAttrs,
-		statTTL:   defaultStatTTL,
-		now:       time.Now,
-		readFile:  os.ReadFile,
+		path:         o.Path,
+		prefix:       o.Prefix,
+		tools:        tools,
+		reserved:     slices.Clone(o.ReservedPrefixes),
+		logger:       logger,
+		validator:    o.ValidateAttrs,
+		allowNonTool: o.AllowNonToolMethods,
+		statTTL:      defaultStatTTL,
+		now:          time.Now,
+		sleep:        time.Sleep,
+		euid:         os.Geteuid,
 	}
+	s.readFile = s.readChecked
 	s.snap.Store(denyAll(fileSig{}, "", false))
 	s.reloading.Store(true)
 	s.reloads.Add(1)
@@ -168,6 +193,7 @@ func (s *Store) Status() Status {
 	cur := s.snap.Load()
 	return Status{
 		LastReloadOK: cur.ok,
+		FileMissing:  cur.sig.missing,
 		Keys:         len(cur.keys),
 		FileSHA256:   cur.fileSHA,
 		Rejected: Rejected{
@@ -178,8 +204,21 @@ func (s *Store) Status() Status {
 	}
 }
 
-// Install sets cfg.BearerAuth to this store's Verifier and ToolFilter. It
-// refuses to overwrite an existing BearerAuth.
+// BearerAuth returns the verifier and the tool filter as one pair. Prefer it
+// (or [Store.Install]) over wiring [Store.Verifier] alone: a verifier without
+// the filter authenticates a key but scopes nothing.
+//
+// BearerAuth does not include [Store.Middleware]; add that to
+// Config.MCPReceivingMiddleware yourself, or use Install which does both.
+func (s *Store) BearerAuth() *mcpserver.BearerAuth {
+	return &mcpserver.BearerAuth{Verifier: s.Verifier(), ToolFilter: s.ToolFilter()}
+}
+
+// Install wires this store into cfg: BearerAuth (verifier plus tool filter) and
+// the [Store.Middleware] receiving middleware. It refuses to overwrite an
+// existing BearerAuth and refuses a Config with RESTBridge set, which this
+// package does not support. (Setting RESTBridge after Install still fails
+// closed: bridged calls carry no identity and are denied.)
 func (s *Store) Install(cfg *mcpserver.Config) error {
 	if cfg == nil {
 		return errors.New("keyfile: Install: nil Config")
@@ -187,14 +226,22 @@ func (s *Store) Install(cfg *mcpserver.Config) error {
 	if cfg.BearerAuth != nil {
 		return errors.New("keyfile: Install: Config.BearerAuth is already set")
 	}
-	cfg.BearerAuth = &mcpserver.BearerAuth{Verifier: s.Verifier(), ToolFilter: s.ToolFilter()}
+	if cfg.RESTBridge {
+		return errors.New("keyfile: Install: RESTBridge is not supported with keyfile")
+	}
+	cfg.BearerAuth = s.BearerAuth()
+	cfg.MCPReceivingMiddleware = append(cfg.MCPReceivingMiddleware, s.Middleware())
 	return nil
 }
 
 // Verifier returns the token verifier. Every rejection wraps
 // [auth.ErrInvalidToken] (HTTP 401) and carries no detail about why. The
-// returned TokenInfo has UserID = key name and a private copy of the key's tool
-// list, which [Store.ToolFilter] reads.
+// returned TokenInfo has UserID = key name and private copies of the key's tool
+// list and attrs.
+//
+// WARNING: a Verifier on its own only authenticates. It must be paired with
+// [Store.ToolFilter] in the same BearerAuth, or every valid key can call every
+// tool. Use [Store.BearerAuth] or [Store.Install] to get the pair.
 func (s *Store) Verifier() auth.TokenVerifier {
 	return s.verify
 }
@@ -206,11 +253,11 @@ func (s *Store) verify(_ context.Context, token string, _ *http.Request) (*auth.
 		return nil, auth.ErrInvalidToken
 	}
 	s.lookups.Add(1)
+	// The map is keyed by the SHA-256 of the token. An attacker cannot steer
+	// the digest, so lookup timing reveals nothing about stored digests.
 	digest := sha256.Sum256([]byte(token))
 	e, found := s.snap.Load().keys[digest]
-	// The map is keyed by digest, so a hit is already an exact match; the
-	// constant-time compare keeps the final decision independent of map layout.
-	if !found || subtle.ConstantTimeCompare(digest[:], e.digest[:]) != 1 {
+	if !found {
 		s.reject(reasonUnknown, "")
 		return nil, auth.ErrInvalidToken
 	}
@@ -232,6 +279,9 @@ func (s *Store) verify(_ context.Context, token string, _ *http.Request) (*auth.
 // ToolFilter returns a BearerAuth.ToolFilter that allows a tool only when it is
 // in the tool snapshot carried by the verified TokenInfo. A nil TokenInfo, or
 // one without the snapshot, is denied; the store itself is never consulted.
+//
+// WARNING: it must be paired with [Store.Verifier]; see the warning there. Use
+// [Store.BearerAuth] or [Store.Install].
 func (s *Store) ToolFilter() func(context.Context, string, *mcpserver.TokenInfo) bool {
 	return func(_ context.Context, tool string, info *mcpserver.TokenInfo) bool {
 		if info == nil {
@@ -245,8 +295,42 @@ func (s *Store) ToolFilter() func(context.Context, string, *mcpserver.TokenInfo)
 	}
 }
 
+// ctxKey is keyfile's own context key for the per-request identity.
+type ctxKey struct{}
+
+// Middleware returns MCP receiving middleware that (1) denies MCP methods other
+// than initialize, ping, notifications/* and tools/* unless
+// Options.AllowNonToolMethods is set, and (2) stores each request's own
+// verified TokenInfo in the context for [Attrs]. [Store.Install] adds it.
+//
+// The key file scopes tools only, and the tool filter never sees resources or
+// prompts, so without this guard any valid key could read every registered
+// resource and prompt.
+func (s *Store) Middleware() mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if !s.allowNonTool && !scopedMethod(method) {
+				return nil, fmt.Errorf("keyfile: method not permitted: %s", method)
+			}
+			if extra := req.GetExtra(); extra != nil && extra.TokenInfo != nil {
+				ctx = context.WithValue(ctx, ctxKey{}, extra.TokenInfo)
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
+// scopedMethod reports whether method is handled by the tool filter or carries
+// no key-scoped data.
+func scopedMethod(method string) bool {
+	return method == "initialize" || method == "ping" ||
+		strings.HasPrefix(method, "notifications/") || strings.HasPrefix(method, "tools/")
+}
+
 // AttrsOf returns a copy of the attrs snapshotted when info was verified, or nil
-// if info is nil or was not produced by a keyfile Verifier.
+// if info is nil or was not produced by a keyfile Verifier. In a tool handler
+// prefer AttrsOf(req.Extra.TokenInfo), which is always the current request's
+// identity.
 func AttrsOf(info *mcpserver.TokenInfo) map[string]string {
 	if info == nil {
 		return nil
@@ -258,11 +342,14 @@ func AttrsOf(info *mcpserver.TokenInfo) map[string]string {
 	return maps.Clone(attrs)
 }
 
-// Attrs returns a copy of the verified key's attrs for the request in ctx (as
-// seen by tool handlers and middleware), or nil when ctx carries no keyfile
-// identity. The values are the snapshot taken at verification time.
+// Attrs returns a copy of the verified key's attrs for the request in ctx, or
+// nil when ctx carries no keyfile identity (for example when [Store.Middleware]
+// is not installed). It reads a context value set per request by the
+// middleware, not the SDK's connection context, which in stateful mode would
+// still hold the identity of the request that opened the session.
 func Attrs(ctx context.Context) map[string]string {
-	return AttrsOf(auth.TokenInfoFromContext(ctx))
+	info, _ := ctx.Value(ctxKey{}).(*mcpserver.TokenInfo)
+	return AttrsOf(info)
 }
 
 // allow reports whether tool is explicitly granted. An empty list grants
@@ -279,9 +366,7 @@ func allow(granted []string, tool string) bool {
 // token material.
 func (s *Store) reject(r rejectReason, keyName string) {
 	s.rejects[r].Add(1)
-	nowNS := time.Now().UnixNano()
-	last := s.lastWarn[r].Load()
-	if nowNS-last < int64(rejectLogEvery) || !s.lastWarn[r].CompareAndSwap(last, nowNS) {
+	if !s.warnDue(&s.lastWarn[r]) {
 		return
 	}
 	attrs := []any{slog.String("reason", r.String())}

@@ -4,17 +4,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
-	"time"
+	"sync/atomic"
 )
 
 // fileSig identifies a file version. It is read before the content, so a write
-// that lands mid-read changes the signature and triggers another reload.
+// that lands mid-read changes the signature and triggers another reload. The
+// zero value never matches a real file and so forces a re-read.
 type fileSig struct {
 	ino     uint64
 	mtimeNS int64
+	ctimeNS int64
 	size    int64
 	missing bool
 }
@@ -35,20 +38,30 @@ func (s *Store) statDue() bool {
 	if s.statTTL <= 0 {
 		return true
 	}
-	now := time.Now().UnixNano()
+	now := s.now().UnixNano()
 	last := s.lastStatNS.Load()
 	return now-last >= int64(s.statTTL) && s.lastStatNS.CompareAndSwap(last, now)
 }
 
+// warnDue reports whether a rate-limited log line may be emitted now and, if
+// so, records it.
+func (s *Store) warnDue(last *atomic.Int64) bool {
+	now := s.now().UnixNano()
+	prev := last.Load()
+	return now-prev >= int64(rejectLogEvery) && last.CompareAndSwap(prev, now)
+}
+
+// statSig stats the path itself (not a symlink target).
 func (s *Store) statSig() (fileSig, error) {
-	fi, err := os.Stat(s.path)
+	fi, err := os.Lstat(s.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fileSig{missing: true}, nil
 	}
 	if err != nil {
 		return fileSig{}, err
 	}
-	return fileSig{ino: inode(fi), mtimeNS: fi.ModTime().UnixNano(), size: fi.Size()}, nil
+	ino, ctime := sigMeta(fi)
+	return fileSig{ino: ino, mtimeNS: fi.ModTime().UnixNano(), ctimeNS: ctime, size: fi.Size()}, nil
 }
 
 // maybeReload re-reads the file when its signature changed. It is single-flight
@@ -60,47 +73,94 @@ func (s *Store) maybeReload() {
 		return
 	}
 	sig, err := s.statSig()
-	if err == nil && sig == s.snap.Load().sig {
+	if err != nil {
+		s.statFailed()
+		return
+	}
+	if sig == s.snap.Load().sig {
 		return
 	}
 	if !s.reloading.CompareAndSwap(false, true) {
 		return
 	}
 	s.reloads.Add(1)
-	snap, err := s.attempt()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.reloading.Store(false)
+		}
+	}()
+	defer s.recoverDenyAll()
+	snap, err := s.safeAttempt()
 	if err == nil {
 		s.finish(snap, nil)
-		s.reloading.Store(false)
 		return
 	}
 	s.logger.Warn("keyfile: key file unusable, retrying once",
 		slog.String("problem", err.Error()), slog.Duration("retry_in", retryDelay))
+	handedOff = true
 	go func() {
 		defer s.reloading.Store(false)
-		time.Sleep(retryDelay)
-		s.finish(s.attempt())
+		defer s.recoverDenyAll()
+		s.sleep(retryDelay)
+		s.finish(s.safeAttempt())
 	}()
+}
+
+// statFailed handles a stat error other than "does not exist": deny all, once,
+// with no reload cycle and at most one log line per minute while it persists.
+func (s *Store) statFailed() {
+	if cur := s.snap.Load(); cur.ok || cur.sig != (fileSig{}) {
+		s.snap.Store(denyAll(fileSig{}, "", false))
+	}
+	if s.warnDue(&s.lastIOWarn) {
+		s.logger.Error("keyfile: cannot stat key file, denying all keys")
+	}
 }
 
 // reloadBlocking is the Open-time variant: first read, one retry, then install.
 // The caller holds s.reloading.
 func (s *Store) reloadBlocking() {
 	defer s.reloading.Store(false)
-	snap, err := s.attempt()
+	defer s.recoverDenyAll()
+	snap, err := s.safeAttempt()
 	if err != nil {
 		s.logger.Warn("keyfile: key file unusable, retrying once",
 			slog.String("problem", err.Error()), slog.Duration("retry_in", retryDelay))
-		time.Sleep(retryDelay)
-		snap, err = s.attempt()
+		s.sleep(retryDelay)
+		snap, err = s.safeAttempt()
 	}
 	s.finish(snap, err)
+}
+
+// recoverDenyAll is a backstop for a panic anywhere in a reload: the process
+// survives and the store denies everything. The panic value is not logged.
+func (s *Store) recoverDenyAll() {
+	if r := recover(); r != nil {
+		s.snap.Store(denyAll(fileSig{}, "", false))
+		s.logger.Error("keyfile: internal error during reload, denying all keys")
+	}
+}
+
+// safeAttempt runs attempt and converts a panic into a load error.
+func (s *Store) safeAttempt() (snap *snapshot, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			snap, err = denyAll(fileSig{}, "", false), &loadError{"internal error"}
+		}
+	}()
+	return s.attempt()
 }
 
 // finish installs the result of a load: the new key set, or deny-all.
 func (s *Store) finish(snap *snapshot, err error) {
 	if err != nil {
-		s.logger.Error("keyfile: key file invalid, denying all keys",
-			slog.String("problem", err.Error()))
+		// A zero signature means the failure may be transient and the file
+		// will be re-read; keep that from flooding the log.
+		if snap.sig != (fileSig{}) || s.warnDue(&s.lastLoadWarn) {
+			s.logger.Error("keyfile: key file invalid, denying all keys",
+				slog.String("problem", err.Error()))
+		}
 		s.snap.Store(denyAll(snap.sig, snap.fileSHA, false))
 		return
 	}
@@ -108,9 +168,10 @@ func (s *Store) finish(snap *snapshot, err error) {
 	s.logger.Info("keyfile: key file loaded", slog.Int("keys", len(snap.keys)))
 }
 
-// attempt stats, reads and parses the file once. On failure the returned
-// snapshot carries the signature and hash of what was seen, so the failed
-// version is not re-read until the file changes again.
+// attempt stats, reads and parses the file once. On a content failure the
+// returned snapshot carries the signature and hash of what was seen, so that
+// version is not re-read until the file changes. A refusal or an I/O error
+// carries the zero signature, so the file is checked again on the next pass.
 func (s *Store) attempt() (*snapshot, error) {
 	sig, err := s.statSig()
 	if err != nil {
@@ -124,7 +185,11 @@ func (s *Store) attempt() (*snapshot, error) {
 		return denyAll(fileSig{missing: true}, "", true), nil
 	}
 	if err != nil {
-		return denyAll(sig, "", false), &loadError{"read failed"}
+		var le *loadError
+		if errors.As(err, &le) {
+			return denyAll(fileSig{}, "", false), le
+		}
+		return denyAll(fileSig{}, "", false), &loadError{"read failed"}
 	}
 	sum := sha256.Sum256(data)
 	fileSHA := hex.EncodeToString(sum[:])
@@ -137,4 +202,32 @@ func (s *Store) attempt() (*snapshot, error) {
 		keys[e.digest] = e
 	}
 	return &snapshot{keys: keys, sig: sig, fileSHA: fileSHA, ok: true}, nil
+}
+
+// readChecked opens the key file without following symlinks, validates the
+// open descriptor and its directory, and reads at most maxFileSize+1 bytes.
+func (s *Store) readChecked(path string) ([]byte, error) {
+	f, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if reason := s.checkFile(fi); reason != "" {
+		return nil, &loadError{reason}
+	}
+	reason, err := checkParent(path)
+	if err != nil {
+		return nil, err
+	}
+	if reason != "" {
+		return nil, &loadError{reason}
+	}
+	if fi.Size() > maxFileSize {
+		return nil, &loadError{kindTooLarge}
+	}
+	return io.ReadAll(io.LimitReader(f, maxFileSize+1))
 }
