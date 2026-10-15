@@ -40,7 +40,16 @@ func (s *Store) statDue() bool {
 	}
 	now := s.now().UnixNano()
 	last := s.lastStatNS.Load()
-	return now-last >= int64(s.statTTL) && s.lastStatNS.CompareAndSwap(last, now)
+	return elapsedDue(now, last, int64(s.statTTL)) && s.lastStatNS.CompareAndSwap(last, now)
+}
+
+// elapsedDue reports whether at least every nanoseconds passed since last. A
+// negative delta (the wall clock stepped backwards) counts as due: otherwise
+// the gate stays shut until the clock catches up, and a revoked key would keep
+// authenticating meanwhile.
+func elapsedDue(now, last, every int64) bool {
+	d := now - last
+	return d < 0 || d >= every
 }
 
 // warnDue reports whether a rate-limited log line may be emitted now and, if
@@ -48,7 +57,7 @@ func (s *Store) statDue() bool {
 func (s *Store) warnDue(last *atomic.Int64) bool {
 	now := s.now().UnixNano()
 	prev := last.Load()
-	return now-prev >= int64(rejectLogEvery) && last.CompareAndSwap(prev, now)
+	return elapsedDue(now, prev, int64(rejectLogEvery)) && last.CompareAndSwap(prev, now)
 }
 
 // statSig stats the path itself (not a symlink target).
@@ -96,8 +105,7 @@ func (s *Store) maybeReload() {
 		s.finish(snap, nil)
 		return
 	}
-	s.logger.Warn("keyfile: key file unusable, retrying once",
-		slog.String("problem", err.Error()), slog.Duration("retry_in", retryDelay))
+	s.warnRetry(err)
 	handedOff = true
 	go func() {
 		defer s.reloading.Store(false)
@@ -105,6 +113,16 @@ func (s *Store) maybeReload() {
 		s.sleep(retryDelay)
 		s.finish(s.safeAttempt())
 	}()
+}
+
+// warnRetry logs the "retrying once" line, at most once a minute so a file that
+// keeps changing into an unusable state cannot flood the log.
+func (s *Store) warnRetry(err error) {
+	if !s.warnDue(&s.lastRetryWarn) {
+		return
+	}
+	s.logger.Warn("keyfile: key file unusable, retrying once",
+		slog.String("problem", err.Error()), slog.Duration("retry_in", retryDelay))
 }
 
 // statFailed handles a stat error other than "does not exist": deny all, once,
@@ -125,8 +143,7 @@ func (s *Store) reloadBlocking() {
 	defer s.recoverDenyAll()
 	snap, err := s.safeAttempt()
 	if err != nil {
-		s.logger.Warn("keyfile: key file unusable, retrying once",
-			slog.String("problem", err.Error()), slog.Duration("retry_in", retryDelay))
+		s.warnRetry(err)
 		s.sleep(retryDelay)
 		snap, err = s.safeAttempt()
 	}
@@ -168,10 +185,14 @@ func (s *Store) finish(snap *snapshot, err error) {
 	s.logger.Info("keyfile: key file loaded", slog.Int("keys", len(snap.keys)))
 }
 
-// attempt stats, reads and parses the file once. On a content failure the
-// returned snapshot carries the signature and hash of what was seen, so that
-// version is not re-read until the file changes. A refusal or an I/O error
-// carries the zero signature, so the file is checked again on the next pass.
+// attempt stats, reads and parses the file once. On a content failure or a
+// refusal (symlink, wrong type, writable, untrusted owner, too large) the
+// returned snapshot carries the signature of what was seen, so that version is
+// not re-read until the file changes; the ctime in the signature picks up a
+// chmod or chown that fixes it. Two cases keep the zero signature so the file
+// is checked again on the next pass: an I/O error (it may be transient) and a
+// refused parent directory (a fix there leaves the file's own signature
+// unchanged).
 func (s *Store) attempt() (*snapshot, error) {
 	sig, err := s.statSig()
 	if err != nil {
@@ -187,7 +208,10 @@ func (s *Store) attempt() (*snapshot, error) {
 	if err != nil {
 		var le *loadError
 		if errors.As(err, &le) {
-			return denyAll(fileSig{}, "", false), le
+			if le.kind == kindParentWritable {
+				return denyAll(fileSig{}, "", false), le
+			}
+			return denyAll(sig, "", false), le
 		}
 		return denyAll(fileSig{}, "", false), &loadError{"read failed"}
 	}
