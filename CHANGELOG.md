@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/anatolykoptev/go-mcpserver/compare/v0.21.0...v0.22.0) (2026-10-15)
+
+
+### Added
+
+* **keyfile:** experimental hashed per-key token verifier with tool scoping ([#47](https://github.com/anatolykoptev/go-mcpserver/issues/47)) ([fdf3d28](https://github.com/anatolykoptev/go-mcpserver/commit/fdf3d28a57978c7798c521e8d86cfaec3f6ed994))
+
 ## [0.21.0](https://github.com/anatolykoptev/go-mcpserver/compare/v0.20.0...v0.21.0) (2026-10-10)
 
 
