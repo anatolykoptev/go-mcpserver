@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -43,6 +44,11 @@ func Recovery(logger *slog.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rv := recover(); rv != nil {
+					if err, ok := rv.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+						// The handler aborted the response on purpose (a cut
+						// stream); net/http closes the connection. Not a crash.
+						panic(rv)
+					}
 					logger.Error("panic recovered",
 						slog.Any("panic", rv),
 						slog.String("path", r.URL.Path),
