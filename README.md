@@ -308,6 +308,29 @@ if mcpserver.IsStdio() {
 }
 ```
 
+## Other entry points
+
+- `Serve(impl, cfg, register)` builds the server, registers tools and runs it in one call.
+- `Build(server, cfg)` returns the `http.Handler` without listening; `NewTestServer` wraps it in an
+  `httptest.Server` for tests.
+- `BearerAuth` (OAuth 2.1 bearer verification on `/mcp`, `StaticTokenVerifier` for a pre-shared
+  token, `ToolFilter`, loopback bypass with `LoopbackIdentity`) and `MCPHooks` (observer callbacks
+  for tool calls) are described in their Go doc comments (`auth.go`, `hooks.go`).
+- `AddTool` (`lenient.go`) registers a tool that coerces string arguments to their schema types
+  before validation, for LLM clients that send `"true"` instead of `true`.
+- `mcpclient` is a small reusable MCP client with per-call timeouts, lazy reconnect and an
+  unreachable-tolerant mode.
+
+## Status
+
+Pre-1.0 (`v0.x`); a minor version can change API, so pin a version. Versions and
+[CHANGELOG.md](CHANGELOG.md) come from release-please. Planned work is in [ROADMAP.md](ROADMAP.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); coding agents start at [CLAUDE.md](CLAUDE.md). Every
+document is listed in [docs/INDEX.md](docs/INDEX.md).
+
 ## License
 
-Apache 2.0
+Apache 2.0, see [LICENSE](LICENSE).
