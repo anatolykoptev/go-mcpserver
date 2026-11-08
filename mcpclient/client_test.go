@@ -505,3 +505,28 @@ func TestBearer_SentToEndpointOrigin(t *testing.T) {
 		}
 	}
 }
+
+// TestBearer_NotSentWhenOnlyPortDiffersOnRedirect: same host, different port
+// is a different origin; the second hop must not carry the bearer.
+func TestBearer_NotSentWhenOnlyPortDiffersOnRedirect(t *testing.T) {
+	b, bGot := bearerProbe(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	a, aGot := bearerProbe(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, b.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+	c := mcpclient.New(a.URL, mcpclient.WithBearer("probe-token"), mcpclient.WithTimeout(3*time.Second))
+	_, _ = c.Call(context.Background(), "echo", map[string]any{"msg": "x"})
+	if ag := aGot(); len(ag) == 0 || ag[0] != "Bearer probe-token" {
+		t.Fatalf("endpoint must receive the bearer, got %q", ag)
+	}
+	bg := bGot()
+	if len(bg) == 0 {
+		t.Fatal("redirect target never reached; test is vacuous")
+	}
+	for _, h := range bg {
+		if h != "" {
+			t.Fatalf("bearer leaked to another port: Authorization=%q", h)
+		}
+	}
+}

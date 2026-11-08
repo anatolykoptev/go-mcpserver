@@ -84,7 +84,9 @@ func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) { c.httpClient = hc }
 }
 
-// WithBearer sets an Authorization: Bearer <token> header on all requests.
+// WithBearer sets an Authorization: Bearer <token> header on requests to the
+// configured endpoint origin (scheme, host and port); requests to any other
+// origin, such as a cross-origin redirect target, are sent without it.
 // Implemented via a custom http.RoundTripper wrapping the base transport.
 func WithBearer(token string) Option {
 	return func(c *Client) { c.bearer = token }
