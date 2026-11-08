@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -244,7 +245,11 @@ func (c *Client) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	// from "server unreachable" - the SDK reduces both to a plain error string.
 	var rt http.RoundTripper = &statusTransport{base: httpClient.Transport}
 	if c.bearer != "" {
-		rt = &bearerTransport{base: rt, token: c.bearer}
+		endpoint, err := url.Parse(c.baseURL + "/mcp")
+		if err != nil {
+			return nil, fmt.Errorf("mcpclient: parse endpoint: %w", err)
+		}
+		rt = &bearerTransport{base: rt, token: c.bearer, origin: endpoint}
 	}
 	httpClient = &http.Client{
 		Transport:     rt,
@@ -392,15 +397,37 @@ func textFrom(result *mcp.CallToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
-// bearerTransport injects Authorization: Bearer <token> on every request.
+// bearerTransport injects Authorization: Bearer <token> on requests to the
+// configured endpoint origin only. Go strips Authorization on cross-origin
+// redirects before RoundTrip, so re-adding it here for any host would leak the
+// token to wherever a redirect points.
 type bearerTransport struct {
-	base  http.RoundTripper
-	token string
+	base   http.RoundTripper
+	token  string
+	origin *url.URL // endpoint; scheme+host(+port) decide who gets the token
+}
+
+func (t *bearerTransport) sameOrigin(u *url.URL) bool {
+	return strings.EqualFold(u.Scheme, t.origin.Scheme) &&
+		strings.EqualFold(u.Hostname(), t.origin.Hostname()) &&
+		effectivePort(u) == effectivePort(t.origin)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+t.token)
+	if t.sameOrigin(req.URL) {
+		clone.Header.Set("Authorization", "Bearer "+t.token)
+	}
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
