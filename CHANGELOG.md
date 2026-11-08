@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.2](https://github.com/anatolykoptev/go-mcpserver/compare/v0.22.1...v0.22.2) (2026-11-08)
+
+
+### Fixed
+
+* send the bearer token only to the configured endpoint origin ([#55](https://github.com/anatolykoptev/go-mcpserver/issues/55)) ([ce34275](https://github.com/anatolykoptev/go-mcpserver/commit/ce34275ebbeb90b7f6eb01e880a844d023c2fd83))
+
 ## [0.22.1](https://github.com/anatolykoptev/go-mcpserver/compare/v0.22.0...v0.22.1) (2026-10-15)
 
 
