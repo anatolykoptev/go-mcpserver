@@ -1,7 +1,7 @@
 // Package mcpclient provides a thin reusable MCP client over the go-sdk
 // StreamableClientTransport.
 //
-// It centralises the krolik inter-service conventions that were hand-rolled in
+// It centralises the inter-service conventions that were hand-rolled in
 // seven places across the fleet:
 //   - Accept + SSE framing — delegated entirely to StreamableClientTransport.
 //   - Per-call timeout — every Call wraps ctx in context.WithTimeout.
