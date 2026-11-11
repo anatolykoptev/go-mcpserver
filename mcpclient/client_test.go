@@ -438,3 +438,95 @@ func TestCall_ServerError5xx_StaysUnreachable(t *testing.T) {
 		t.Errorf("strict 503: err = %v; want ErrUnreachable and not ErrRejected", err)
 	}
 }
+
+// bearerProbe starts a server that records the Authorization header of every
+// request and answers with the given handler.
+func bearerProbe(t *testing.T, h func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, r.Header.Get("Authorization"))
+		mu.Unlock()
+		h(w, r)
+	}))
+	t.Cleanup(s.Close)
+	return s, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), got...)
+	}
+}
+
+// TestBearer_NotSentToForeignOriginOnRedirect: the endpoint redirects to a
+// different origin (localhost vs 127.0.0.1); the bearer must not follow.
+func TestBearer_NotSentToForeignOriginOnRedirect(t *testing.T) {
+	b, bGot := bearerProbe(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	bURL := strings.Replace(b.URL, "127.0.0.1", "localhost", 1)
+	a, aGot := bearerProbe(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, bURL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+
+	c := mcpclient.New(a.URL, mcpclient.WithBearer("probe-token"), mcpclient.WithTimeout(3*time.Second))
+	_, _ = c.Call(context.Background(), "echo", map[string]any{"msg": "x"})
+
+	if ag := aGot(); len(ag) == 0 || ag[0] != "Bearer probe-token" {
+		t.Fatalf("endpoint origin must receive the bearer, got %q", ag)
+	}
+	bg := bGot()
+	if len(bg) == 0 {
+		t.Fatal("redirect target was never reached; test is vacuous")
+	}
+	for _, h := range bg {
+		if h != "" {
+			t.Fatalf("bearer leaked to a foreign origin: Authorization=%q", h)
+		}
+	}
+}
+
+// TestBearer_SentToEndpointOrigin guards against over-fixing: plain calls to
+// the configured endpoint still carry the bearer.
+func TestBearer_SentToEndpointOrigin(t *testing.T) {
+	a, aGot := bearerProbe(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	c := mcpclient.New(a.URL, mcpclient.WithBearer("probe-token"), mcpclient.WithTimeout(3*time.Second))
+	_, _ = c.Call(context.Background(), "echo", map[string]any{"msg": "x"})
+	ag := aGot()
+	if len(ag) == 0 {
+		t.Fatal("endpoint never reached")
+	}
+	for _, h := range ag {
+		if h != "Bearer probe-token" {
+			t.Fatalf("endpoint request lost bearer: %q", h)
+		}
+	}
+}
+
+// TestBearer_NotSentWhenOnlyPortDiffersOnRedirect: same host, different port
+// is a different origin; the second hop must not carry the bearer.
+func TestBearer_NotSentWhenOnlyPortDiffersOnRedirect(t *testing.T) {
+	b, bGot := bearerProbe(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	a, aGot := bearerProbe(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, b.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+	c := mcpclient.New(a.URL, mcpclient.WithBearer("probe-token"), mcpclient.WithTimeout(3*time.Second))
+	_, _ = c.Call(context.Background(), "echo", map[string]any{"msg": "x"})
+	if ag := aGot(); len(ag) == 0 || ag[0] != "Bearer probe-token" {
+		t.Fatalf("endpoint must receive the bearer, got %q", ag)
+	}
+	bg := bGot()
+	if len(bg) == 0 {
+		t.Fatal("redirect target never reached; test is vacuous")
+	}
+	for _, h := range bg {
+		if h != "" {
+			t.Fatalf("bearer leaked to another port: Authorization=%q", h)
+		}
+	}
+}
