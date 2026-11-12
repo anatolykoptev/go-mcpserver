@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.3](https://github.com/anatolykoptev/go-mcpserver/compare/v0.22.2...v0.22.3) (2026-11-12)
+
+
+### Documentation
+
+* bring repository documents up to the repo-standards set ([#54](https://github.com/anatolykoptev/go-mcpserver/issues/54)) ([662e462](https://github.com/anatolykoptev/go-mcpserver/commit/662e46271c22170fa1e7475492f4883c664f73ba))
+
 ## [0.22.2](https://github.com/anatolykoptev/go-mcpserver/compare/v0.22.1...v0.22.2) (2026-11-08)
 
 
