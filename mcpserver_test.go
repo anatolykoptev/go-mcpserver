@@ -333,7 +333,9 @@ func TestRunBindFailure(t *testing.T) {
 	}
 
 	cancel()
-	<-errCh1
+	if err := <-errCh1; err != nil {
+		t.Logf("first server exit: %v", err)
+	}
 }
 
 func TestBuild(t *testing.T) {
